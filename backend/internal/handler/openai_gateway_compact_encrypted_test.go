@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestNormalizeOpenAIResponsesCompactRequest_StripsAccountBoundEncryptedItems(t *testing.T) {
+func TestNormalizeOpenAIResponsesCompactRequest_PreservesNativeCompactionUntilRouting(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{
 		"model":"gpt-6.1-sol",
@@ -26,8 +26,8 @@ func TestNormalizeOpenAIResponsesCompactRequest_StripsAccountBoundEncryptedItems
 	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	require.True(t, isOpenAIRemoteCompactionV2Request(normalized))
-	require.False(t, gjson.GetBytes(normalized, `input.#(type=="reasoning")`).Exists())
-	require.False(t, gjson.GetBytes(normalized, `input.#(type=="compaction")`).Exists())
-	require.Equal(t, "compaction_trigger", gjson.GetBytes(normalized, "input.2.type").String())
-	require.Equal(t, "continue", gjson.GetBytes(normalized, "input.1.content").String())
+	require.Equal(t, "account-a-ciphertext", gjson.GetBytes(normalized, `input.#(type=="reasoning").encrypted_content`).String())
+	require.Equal(t, "account-a-compaction", gjson.GetBytes(normalized, `input.#(type=="compaction").encrypted_content`).String())
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(normalized, "input.4.type").String())
+	require.Equal(t, "continue", gjson.GetBytes(normalized, "input.3.content").String())
 }

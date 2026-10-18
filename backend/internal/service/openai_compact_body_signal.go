@@ -12,6 +12,7 @@ import (
 // （裸 /responses + stream:true + compaction_trigger），由 handler 在判定后
 // 写入，供上游请求构造时补注协商头。
 const openAINativeCompactionV2Key = "openai_native_compaction_v2"
+const openAINativeCompactionV2IngressKey = "openai_native_compaction_v2_ingress"
 
 const openAIRemoteCompactionV2Feature = "remote_compaction_v2"
 
@@ -32,7 +33,22 @@ func newOpenAINativeCompactionUnsupportedError() *UpstreamFailoverError {
 func MarkOpenAINativeCompactionV2(c *gin.Context) {
 	if c != nil {
 		c.Set(openAINativeCompactionV2Key, true)
+		c.Set(openAINativeCompactionV2IngressKey, true)
 	}
+}
+
+func ClearOpenAINativeCompactionV2(c *gin.Context) {
+	if c != nil {
+		c.Set(openAINativeCompactionV2Key, false)
+	}
+}
+
+func beginOpenAICompactionAttempt(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(openAICompactionSummaryExecutionKey, openAICompactionSummaryExecution{})
+	c.Set(openAINativeCompactionV2Key, c.GetBool(openAINativeCompactionV2IngressKey))
 }
 
 // NormalizeCompactionTriggerInputOrder keeps a single compaction trigger as
@@ -156,6 +172,9 @@ func hasOpenAICodexBetaFeaturesHeader(h http.Header) bool {
 // 已被上游下线（404），不存在可回退的正确行为。
 func applyOpenAICodexBetaFeatures(c *gin.Context, account *Account, h http.Header) {
 	if h == nil {
+		return
+	}
+	if IsOpenAICompactionSummaryExecution(c) {
 		return
 	}
 	if isOpenAINativeCompactionV2(c) {

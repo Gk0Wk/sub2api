@@ -113,6 +113,11 @@ const (
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
 
+// OpenAICompactSummaryEnabledExtraKey explicitly allows policy-free summary
+// compaction on an account whose native upstream cannot consume remote
+// compaction v2. It remains disabled unless the extra field is true.
+const OpenAICompactSummaryEnabledExtraKey = "compact_summary_enabled"
+
 // GrokMediaEligibleExtraKey is an optional per-account override stored in
 // accounts.extra. true forces media routing on, false disables it, and an
 // absent/null value uses provider observations.
@@ -974,7 +979,7 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 // GetOpenAICompactMode returns the compact routing mode for an OpenAI account.
 // Missing or invalid values fall back to "auto".
 func (a *Account) GetOpenAICompactMode() string {
-	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+	if a == nil || !a.IsOpenAICompatible() || a.Extra == nil {
 		return OpenAICompactModeAuto
 	}
 	mode, _ := a.Extra["openai_compact_mode"].(string)
@@ -984,7 +989,7 @@ func (a *Account) GetOpenAICompactMode() string {
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
-	if a == nil || !a.IsOpenAI() {
+	if a == nil || !a.IsOpenAICompatible() {
 		return false, false
 	}
 
@@ -1009,7 +1014,7 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 // requests. Unknown capability remains allowed to avoid breaking older accounts
 // before an explicit probe has been run.
 func (a *Account) AllowsOpenAICompact() bool {
-	if a == nil || !a.IsOpenAI() {
+	if a == nil || !a.IsOpenAICompatible() {
 		return false
 	}
 	supported, known := a.OpenAICompactSupportKnown()
@@ -1017,6 +1022,23 @@ func (a *Account) AllowsOpenAICompact() bool {
 		return true
 	}
 	return supported
+}
+
+// OpenAICompactSummaryEnabled reports the explicit server-side summary consent
+// for this account. Missing, null, or malformed values mean disabled.
+func (a *Account) OpenAICompactSummaryEnabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	enabled, _ := a.Extra[OpenAICompactSummaryEnabledExtraKey].(bool)
+	return enabled
+}
+
+// SupportsOpenAICompactionRequest reports whether the account can satisfy a
+// compaction request either natively or through the explicitly enabled summary
+// execution path.
+func (a *Account) SupportsOpenAICompactionRequest() bool {
+	return a != nil && (a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityRemoteCompactionV2) || a.OpenAICompactSummaryEnabled())
 }
 
 // GetCompactModelMapping returns compact-only model remapping configuration.

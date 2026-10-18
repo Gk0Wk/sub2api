@@ -63,6 +63,43 @@ func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
 	return buildOpenAIResponsesURL(base)
 }
 
+// openAIResponsesTargetURL resolves the final ordinary Responses endpoint for
+// this account. Forward, passthrough, and capability probes share this function
+// so endpoint selection cannot drift between them.
+func (s *OpenAIGatewayService) openAIResponsesTargetURL(account *Account) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("account is unavailable")
+	}
+	var targetURL string
+	switch account.Type {
+	case AccountTypeOAuth:
+		targetURL = chatgptCodexURL
+	case AccountTypeSetupToken:
+		if account.IsOpenAIOAuthLike() {
+			targetURL = chatgptCodexURL
+		} else {
+			targetURL = openaiPlatformAPIURL
+		}
+	case AccountTypeAPIKey:
+		baseURL := account.GetOpenAIBaseURL()
+		if account.UsesNativeCNResponses() && account.IsAdaptiveAPIProtocol() {
+			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
+		if baseURL == "" {
+			targetURL = openaiPlatformAPIURL
+		} else {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return "", err
+			}
+			targetURL = buildOpenAIResponsesURLForPlatform(account.Platform, validatedURL)
+		}
+	default:
+		targetURL = openaiPlatformAPIURL
+	}
+	return targetURL, nil
+}
+
 func shouldPreserveOpenAIResponsesNoneReasoningEffort(account *Account) bool {
 	if account == nil {
 		return false
@@ -435,9 +472,8 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
-		if _, encrypted := inputItem["encrypted_content"]; encrypted {
-			return nil, true, false
-		}
+		// Native compaction is opaque conversation state, not replayable
+		// reasoning. Never delete it as part of reasoning self-healing.
 		return item, false, true
 	case "reasoning":
 	default:
@@ -522,11 +558,6 @@ func SanitizeOpenAIAccountBoundEncryptedContent(body []byte) (sanitized []byte, 
 		return body, false, fmt.Errorf("serialize account-bound encrypted content: %w", marshalErr)
 	}
 	return out, true, nil
-}
-
-// SanitizeOpenAICompactEncryptedContent is kept for compact-path callers.
-func SanitizeOpenAICompactEncryptedContent(body []byte) (sanitized []byte, changed bool, err error) {
-	return SanitizeOpenAIAccountBoundEncryptedContent(body)
 }
 
 // dropOpenAIEncryptedReasoningInputItems removes reasoning input items that carry
@@ -625,6 +656,69 @@ func isOpenAIAccountBoundEncryptedInputItem(item any) bool {
 	}
 	_, has := inputItem["encrypted_content"]
 	return has
+}
+
+// HasOpenAIEncryptedCompactionInput reports whether a Responses input carries
+// provider-native compaction state that cannot be replayed under another
+// account without owner evidence.
+func HasOpenAIEncryptedCompactionInput(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	check := func(item gjson.Result) bool {
+		if !item.IsObject() || !isOpenAICompactionType(item.Get("type").String()) {
+			return false
+		}
+		encrypted := item.Get("encrypted_content")
+		return encrypted.Type == gjson.String && strings.TrimSpace(encrypted.String()) != ""
+	}
+	if input.IsArray() {
+		found := false
+		input.ForEach(func(_, item gjson.Result) bool {
+			if check(item) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	return input.IsObject() && check(input)
+}
+
+// HasOpenAIUnrecoverableCompactionInput reports native compaction state with
+// no plaintext summary that can safely survive a provider transition.
+func HasOpenAIUnrecoverableCompactionInput(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	check := func(item gjson.Result) bool {
+		if !item.IsObject() || !isOpenAICompactionType(item.Get("type").String()) {
+			return false
+		}
+		encrypted := item.Get("encrypted_content")
+		if encrypted.Type != gjson.String || strings.TrimSpace(encrypted.String()) == "" {
+			return false
+		}
+		summary := item.Get("summary")
+		if summary.Type == gjson.String && strings.TrimSpace(summary.String()) != "" {
+			return false
+		}
+		for _, part := range summary.Array() {
+			if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+				return false
+			}
+		}
+		return true
+	}
+	if input.IsArray() {
+		found := false
+		input.ForEach(func(_, item gjson.Result) bool {
+			if check(item) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	return input.IsObject() && check(input)
 }
 
 // IsOpenAIResponsesCompactPath reports whether the request targets the legacy

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -106,30 +107,53 @@ func TestSupportsRemoteCompactionV2UsesProviderEndpointCapability(t *testing.T) 
 	}
 }
 
+func TestSummaryCompactionCapabilityAllowsExplicitNonNativeAccount(t *testing.T) {
+	account := &Account{
+		Platform: PlatformDeepseek,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"api_protocol":                      APIProtocolChatCompletions,
+			OpenAICompactSummaryEnabledExtraKey: true,
+		},
+	}
+	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityRemoteCompactionV2))
+	require.True(t, account.SupportsOpenAICompactionRequest())
+	require.True(t, supportsOpenAIRequestProtocol(account, "deepseek-chat", OpenAIEndpointCapabilityRemoteCompactionV2))
+	require.Equal(t, openAICompactionTierUnknown, (&OpenAIGatewayService{}).openAICompactSupportTier(account, "deepseek-chat", openAICompactionKindV2))
+	require.True(t, accountSupportsOpenAICapabilities(account, OpenAIEndpointCapabilityRemoteCompactionV2, "", false))
+
+	account.Extra[OpenAICompactSummaryEnabledExtraKey] = false
+	require.False(t, account.SupportsOpenAICompactionRequest())
+	require.Equal(t, openAICompactionTierUnsupported, (&OpenAIGatewayService{}).openAICompactSupportTier(account, "deepseek-chat", openAICompactionKindV2))
+}
+
 func TestSchedulerRemoteCompactionCapability(t *testing.T) {
 	for _, engine := range []string{"legacy", "advanced", "load_batch"} {
 		for _, tc := range []struct {
 			name        string
 			platform    string
 			credentials map[string]any
+			extra       map[string]any
 			capability  OpenAIEndpointCapability
 			want        bool
 		}{
-			{"official deepseek compact", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses}, OpenAIEndpointCapabilityRemoteCompactionV2, false},
-			{"official deepseek ordinary", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses}, OpenAIEndpointCapabilityChatCompletions, true},
-			{"custom deepseek compact unknown", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses, "base_url": "https://relay.example.test"}, OpenAIEndpointCapabilityRemoteCompactionV2, true},
-			{"aggregator chat only", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolChatCompletions}, OpenAIEndpointCapabilityRemoteCompactionV2, false},
-			{"aggregator anthropic only", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolAnthropic}, OpenAIEndpointCapabilityRemoteCompactionV2, false},
-			{"aggregator normal chat conversion", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolChatCompletions}, OpenAIEndpointCapabilityChatCompletions, true},
+			{"official deepseek compact", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, false},
+			{"official deepseek summary", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses}, map[string]any{OpenAICompactSummaryEnabledExtraKey: true}, OpenAIEndpointCapabilityRemoteCompactionV2, true},
+			{"official deepseek ordinary", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses}, nil, OpenAIEndpointCapabilityChatCompletions, true},
+			{"custom deepseek compact unknown", PlatformDeepseek, map[string]any{"api_protocol": APIProtocolResponses, "base_url": "https://relay.example.test"}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, true},
+			{"aggregator chat only", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolChatCompletions}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, false},
+			{"aggregator chat summary", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolChatCompletions}, map[string]any{OpenAICompactSummaryEnabledExtraKey: true}, OpenAIEndpointCapabilityRemoteCompactionV2, true},
+			{"aggregator anthropic only", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolAnthropic}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, false},
+			{"aggregator normal chat conversion", PlatformOpenCodeGo, map[string]any{"api_protocol": APIProtocolChatCompletions}, nil, OpenAIEndpointCapabilityChatCompletions, true},
 			{"aggregator mapped protocol", PlatformOpenCodeGo, map[string]any{
 				"model_mapping":         map[string]any{"public-model": "gpt-native"},
 				"compact_model_mapping": map[string]any{"public-model": "legacy-summary"},
 				"protocol_rules":        []any{map[string]any{"pattern": "gpt-native", "protocol": APIProtocolResponses}},
-			}, OpenAIEndpointCapabilityRemoteCompactionV2, true},
+			}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, true},
 			{"aggregator mapped chat protocol", PlatformOpenCodeGo, map[string]any{
 				"model_mapping":  map[string]any{"public-model": "chat-only"},
 				"protocol_rules": []any{map[string]any{"pattern": "chat-only", "protocol": APIProtocolChatCompletions}},
-			}, OpenAIEndpointCapabilityRemoteCompactionV2, false},
+			}, nil, OpenAIEndpointCapabilityRemoteCompactionV2, false},
 		} {
 			t.Run(engine+"/"+tc.name, func(t *testing.T) {
 				resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -138,12 +162,19 @@ func TestSchedulerRemoteCompactionCapability(t *testing.T) {
 				svc := newOpenAICompactionSchedulerTestService([]Account{{
 					ID: 73001, Platform: tc.platform, Type: AccountTypeAPIKey,
 					Status: StatusActive, Schedulable: true, Concurrency: 1,
-					Credentials: tc.credentials,
+					Credentials: tc.credentials, Extra: tc.extra,
 				}}, engine == "advanced")
 				svc.cfg.Gateway.Scheduling.LoadBatchEnabled = engine == "load_batch"
 				model := "public-model"
 				if tc.platform == PlatformDeepseek {
 					model = "deepseek-v4-flash"
+				}
+				if tc.want {
+					reason := openAICompatibleAccountEligibilityFailureReasonBeforeProfit(context.Background(), &Account{
+						Platform: tc.platform, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+						Concurrency: 1, Credentials: tc.credentials, Extra: tc.extra,
+					}, tc.platform, model, false, tc.capability)
+					require.Empty(t, reason)
 				}
 				selection, _, err := svc.SelectAccountWithSchedulerForCapability(
 					context.Background(), &groupID, "", "", model, nil,
@@ -157,6 +188,53 @@ func TestSchedulerRemoteCompactionCapability(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, selection)
 				require.Equal(t, int64(73001), selection.Account.ID)
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+			})
+		}
+	}
+}
+
+// The repository projection round-trip test is the other half of this
+// regression: these are the only compaction fields the cache carries.
+func TestCompactionSchedulerReadsProjectedSummaryAccount(t *testing.T) {
+	for _, engine := range []string{"legacy", "advanced"} {
+		for _, protocol := range []string{APIProtocolChatCompletions, APIProtocolAnthropic} {
+			t.Run(engine+"/"+protocol, func(t *testing.T) {
+				resetOpenAIAdvancedSchedulerSettingCacheForTest()
+				t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+
+				account := Account{
+					ID:          73002,
+					Platform:    PlatformOpenCodeGo,
+					Type:        AccountTypeAPIKey,
+					Status:      StatusActive,
+					Schedulable: true,
+					Concurrency: 1,
+					Credentials: map[string]any{"api_protocol": protocol},
+					Extra: map[string]any{
+						OpenAICompactSummaryEnabledExtraKey: true,
+						"openai_compact_mode":               OpenAICompactModeForceOff,
+						"openai_compact_supported":          false,
+					},
+				}
+				payload, err := json.Marshal(account)
+				require.NoError(t, err)
+				var projected Account
+				require.NoError(t, json.Unmarshal(payload, &projected))
+
+				svc := newOpenAICompactionSchedulerTestService([]Account{projected}, engine == "advanced")
+				groupID := int64(93002)
+				selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+					context.Background(), &groupID, "", "", "gpt-5.6-sol", nil,
+					OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityRemoteCompactionV2,
+					false, false, false, PlatformOpenCodeGo,
+				)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(73002), selection.Account.ID)
+				require.True(t, selection.Account.SupportsOpenAICompactionRequest())
 				if selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
 				}

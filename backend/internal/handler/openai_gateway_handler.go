@@ -438,6 +438,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	if !gjson.ValidBytes(body) {
+		logRequestBodyParseFailure(reqLog, body, nil)
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+
+	restoredBody, _, restoreErr := h.gatewayService.RestoreOpenAICompactionSummaryInput(c.Request.Context(), c, body)
+	if restoreErr != nil {
+		writeOpenAICompactionSummaryPayloadError(c, restoreErr)
+		return
+	}
+	body = restoredBody
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
@@ -451,19 +463,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 原生 v2 压缩出站前补注 x-codex-beta-features: remote_compaction_v2，
 		// 与真实 Codex 线型一致（网关链剥头后本级负责恢复，#5586）。
 		service.MarkOpenAINativeCompactionV2(c)
+		service.MarkOpenAICompactClientStream(c)
 	}
 	// body-signal compact：上游 unary 等待期间向下游发 SSE 注释行心跳，防止
 	// 反向代理空闲超时掐断长压缩连接（#3887）。首拍延迟一个心跳间隔，快速
 	// 失败仍走 JSON+状态码链路；未标记客户端流式或间隔为 0 时是 no-op。
 	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
 	defer stopCompactKeepalive()
-
-	// 校验请求体 JSON 合法性
-	if !gjson.ValidBytes(body) {
-		logRequestBodyParseFailure(reqLog, body, nil)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
-		return
-	}
 
 	// 使用 gjson 只读提取字段做校验，避免完整 Unmarshal
 	modelResult := gjson.GetBytes(body, "model")
@@ -620,7 +626,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// 余额模式在途预留：防止并发请求在预检时看到同一份余额而集体透支。
-	inflightRelease, err := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, tokenInflightEstimate(reqModel, body))
+	inflightEstimate := tokenInflightEstimate(reqModel, body)
+	if legacyCompact || nativeV2 {
+		inflightEstimate = tokenInflightEstimateForCompactionSummary(reqModel, body)
+	}
+	inflightRelease, err := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, inflightEstimate)
 	if err != nil {
 		reqLog.Info("openai.inflight_reservation_rejected", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
@@ -640,7 +650,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
-	requireCompact := legacyCompact
+	requireCompact := legacyCompact && requestPlatform == service.PlatformOpenAI
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -794,6 +804,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+		if passthroughFailoverState.nativeCompactionCrossAccountBlocked {
+			h.handleStreamingAwareError(
+				c,
+				http.StatusBadRequest,
+				"compaction_history_unavailable",
+				"Native compaction state cannot be replayed on a different account; resume on the original account or enable summary compaction",
+				streamStarted,
+			)
+			return
+		}
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
@@ -874,6 +894,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 			if failoverClientGone(c) {
 				reqLog.Info("openai.client_disconnected",
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+				)
+				submitResponsesUsage(result)
+				return
+			}
+			if result != nil && (errors.Is(err, service.ErrOpenAICompactionSummaryGeneration) || errors.Is(err, service.ErrOpenAICompactionSummaryKey)) {
+				reqLog.Warn("openai.compaction_summary_finalize_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
 				)
@@ -1047,7 +1075,6 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 			body = normalized
 		}
 		if isOpenAIRemoteCompactionV2Request(body) {
-			body = sanitizeOpenAICompactEncryptedContent(body, reqLog)
 			return body, true
 		}
 		c.Request.URL.Path = strings.TrimRight(c.Request.URL.Path, "/") + "/compact"
@@ -1061,7 +1088,6 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 	if !isCompactRequest {
 		return body, true
 	}
-	body = sanitizeOpenAICompactEncryptedContent(body, reqLog)
 	if compactSeed := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); compactSeed != "" {
 		c.Set(service.OpenAICompactSessionSeedKeyForTest(), compactSeed)
 	}
@@ -1076,26 +1102,20 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 	return body, true
 }
 
-// sanitizeOpenAICompactEncryptedContent removes account-bound encrypted
-// reasoning/compaction items from a compact request. Account affinity is not
-// guaranteed across a compact retry or failover; forwarding one account's
-// ciphertext to another makes the upstream reject the compact turn. The visible
-// history and the compaction trigger remain intact.
-func sanitizeOpenAICompactEncryptedContent(body []byte, reqLog *zap.Logger) []byte {
-	sanitized, changed, err := service.SanitizeOpenAICompactEncryptedContent(body)
-	if err != nil {
-		if reqLog != nil {
-			reqLog.Warn("codex.remote_compact.encrypted_content_strip_failed", zap.Error(err))
-		}
-		return body
+func writeOpenAICompactionSummaryPayloadError(c *gin.Context, err error) {
+	status := http.StatusBadRequest
+	code := "invalid_compaction_payload"
+	message := "The Sub2API compaction summary payload is invalid"
+	if errors.Is(err, service.ErrOpenAICompactionSummaryKey) {
+		status = http.StatusServiceUnavailable
+		code = "compaction_summary_unavailable"
+		message = "The Sub2API compaction summary key is unavailable"
 	}
-	if changed {
-		if reqLog != nil {
-			reqLog.Info("codex.remote_compact.encrypted_content_stripped")
-		}
-		return sanitized
-	}
-	return body
+	c.JSON(status, gin.H{"error": gin.H{
+		"type":    "invalid_request_error",
+		"code":    code,
+		"message": message,
+	}})
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {
@@ -2706,7 +2726,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	// 余额模式在途预留（会话级）：按首帧估算一次，会话期间续期；每轮计费任务接管引用，
 	// 会话结束且所有轮次扣减落地后释放。
-	inflightCtx, inflightDone, inflightErr := reserveInflightBalanceCtx(ctx, h.billingCacheService, h.gatewayService, apiKey, subscription, tokenInflightEstimate(reqModel, firstMessage))
+	inflightEstimate := tokenInflightEstimate(reqModel, firstMessage)
+	if service.HasCompactionTriggerInInput(firstMessage) {
+		inflightEstimate = tokenInflightEstimateForCompactionSummary(reqModel, firstMessage)
+	}
+	inflightCtx, inflightDone, inflightErr := reserveInflightBalanceCtx(ctx, h.billingCacheService, h.gatewayService, apiKey, subscription, inflightEstimate)
 	if inflightErr != nil {
 		reqLog.Info("openai.websocket_inflight_reservation_rejected", zap.Error(inflightErr))
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "billing check failed")

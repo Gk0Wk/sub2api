@@ -20,7 +20,6 @@ func TestOpenAIResponsesRequiredCapabilityForNativeCompaction(t *testing.T) {
 		})
 	}
 }
-
 func TestNativeCompactionFailoverExhaustedReportsCapability(t *testing.T) {
 	for _, started := range []bool{false, true} {
 		t.Run(map[bool]string{false: "json", true: "after_keepalive"}[started], func(t *testing.T) {
