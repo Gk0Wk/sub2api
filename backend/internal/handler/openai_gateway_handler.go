@@ -294,18 +294,14 @@ func openAIResponsesRequiredCapability(imageIntent bool, platform string) servic
 	return service.OpenAIEndpointCapabilityChatCompletions
 }
 
-func openAIRequestRequiresCompactCapability(legacyCompact, nativeV2 bool, platform string) bool {
-	if legacyCompact {
-		return true
-	}
-	return nativeV2 && platform == service.PlatformOpenAI
-}
-
 // openAIResponsesRequiredCapabilityForRequest returns the endpoint capability
-// required by an image or Responses request. needsResponses includes both the
-// legacy /responses/compact endpoint and native remote compaction v2.
-func openAIResponsesRequiredCapabilityForRequest(imageIntent bool, needsResponses bool, platform string) service.OpenAIEndpointCapability {
-	if needsResponses && platform == service.PlatformOpenAI {
+// required by the wire format. Native v2 is distinct from ordinary Responses
+// and from the legacy /responses/compact model mapping and scheduler tiers.
+func openAIResponsesRequiredCapabilityForRequest(imageIntent, legacyCompact, nativeV2 bool, platform string) service.OpenAIEndpointCapability {
+	if nativeV2 {
+		return service.OpenAIEndpointCapabilityRemoteCompactionV2
+	}
+	if legacyCompact && platform == service.PlatformOpenAI {
 		return service.OpenAIEndpointCapabilityResponses
 	}
 	return openAIResponsesRequiredCapability(imageIntent, platform)
@@ -644,7 +640,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
-	requireCompact := openAIRequestRequiresCompactCapability(legacyCompact, nativeV2, requestPlatform)
+	requireCompact := legacyCompact
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -661,8 +657,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 仅对 OpenAI 平台生效：Grok 生图走独立的 forwardGrokResponses 路径，不应被过滤。
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
-	needsResponses := nativeV2 || legacyCompact
-	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, needsResponses, requestPlatform)
+	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, legacyCompact, nativeV2, requestPlatform)
 
 	// 分组利润控制：请求级装配定价上下文——pricingAt 固定本请求的
 	// D 与计费高峰因子，选号、槽位终检与全部 failover 重入共用同一门与阈值。
@@ -711,6 +706,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
 				cls = classifySelectionFailureError(err, cls)
+				if nativeV2 && !cls.ModelNotFound && errors.Is(err, service.ErrNoAvailableAccounts) {
+					cls.Message = "No available accounts meet native remote compaction v2 requirements; check account availability, Compact capability and upstream Responses protocol"
+				}
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
@@ -3565,6 +3563,11 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	if failoverErr == nil {
 		h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, streamStarted)
+		return
+	}
+	if failoverErr.Reason == service.OpenAINativeCompactionUnsupportedReason {
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+		h.handleStreamingAwareErrorWithCode(c, http.StatusBadRequest, "invalid_request_error", "compact_not_supported", failoverErr.ClientMessage, streamStarted, false)
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)

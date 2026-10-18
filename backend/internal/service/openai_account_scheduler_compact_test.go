@@ -149,7 +149,7 @@ func selectOpenAICompactionSchedulerTestAccount(t *testing.T, svc *OpenAIGateway
 	return selection, err
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_NativeCompactionIgnoresLegacyCompactProbe(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_OrdinaryResponsesIgnoresCompactProbe(t *testing.T) {
 	for _, advanced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy_scheduler", true: "advanced_scheduler"}[advanced], func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
@@ -174,7 +174,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_NativeCompactionIgnores
 	}
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_NativeCompactionAllowsForceOff(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_OrdinaryResponsesAllowsCompactForceOff(t *testing.T) {
 	for _, advanced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy_scheduler", true: "advanced_scheduler"}[advanced], func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()

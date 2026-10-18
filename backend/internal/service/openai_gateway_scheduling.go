@@ -354,6 +354,12 @@ func openAICompactSupportTier(account *Account) int {
 	return 0
 }
 
+// preferOpenAICompactSupport preserves the established OpenAI native-v2
+// preference without enabling legacy compact model mapping for that request.
+func preferOpenAICompactSupport(legacy bool, capability OpenAIEndpointCapability, platform string) bool {
+	return legacy || (capability == OpenAIEndpointCapabilityRemoteCompactionV2 && NormalizeOpenAICompatiblePlatform(platform) == PlatformOpenAI)
+}
+
 // isOpenAICompatibleAccountEligibleForRequest 判断 OpenAI 兼容账号是否满足本次请求的调度条件。
 // 检查内容包括：平台匹配、账号可用性、quota 自动暂停、spark 路由限制、模型支持及端点能力。
 //
@@ -862,6 +868,27 @@ func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedMode
 	return normalizeOpenAIModelForUpstream(account, upstreamModel)
 }
 
+// supportsOpenAIRequestProtocol uses the same mapped model and protocol rules
+// as Forward, without fetching catalogs while considering candidates. A cold
+// model catalog remains unknown until the selected account reaches Forward.
+func supportsOpenAIRequestProtocol(account *Account, requestedModel string, capability OpenAIEndpointCapability) bool {
+	if capability != OpenAIEndpointCapabilityRemoteCompactionV2 || account.IsGrok() {
+		return true
+	}
+	model := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, false)
+	var catalog []string
+	if profile := account.providerProfile(); account.routesByModel() && account.IsAdaptiveAPIProtocol() && profile.ModelCatalog {
+		rules, _ := account.configuredProtocolRules()
+		if _, matched := matchProtocolRuleSet(model, rules); !matched {
+			catalog = cachedModelCatalogProtocols(account, model)
+			if len(catalog) == 0 {
+				return true
+			}
+		}
+	}
+	return resolveUpstreamProtocol(account, APIProtocolResponses, model, catalog) == APIProtocolResponses
+}
+
 // ResolveOpenAIAccountUpstreamModelForRequest exposes the scheduler's exact
 // account mapping chain to handler-side outcome reporting.
 func ResolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool) string {
@@ -1059,7 +1086,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 		compactTier := 0
-		if requireCompact {
+		if preferOpenAICompactSupport(requireCompact, requiredCapability, platform) {
 			compactTier = openAICompactSupportTier(fresh)
 			if compactTier == 0 {
 				compactBlocked = true
@@ -1081,7 +1108,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	}
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
-		if requireCompact && compactTiers[a.ID] != compactTiers[b.ID] {
+		if preferOpenAICompactSupport(requireCompact, requiredCapability, platform) && compactTiers[a.ID] != compactTiers[b.ID] {
 			return compactTiers[a.ID] > compactTiers[b.ID]
 		}
 		if rateCmp := rateOrder.compare(a, b); rateCmp != 0 {
@@ -1286,6 +1313,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			filterStats.exclude(reason)
 			continue
 		}
+		if !supportsOpenAIRequestProtocol(acc, requestedModel, requiredCapability) {
+			filterStats.exclude("native_compaction_protocol_mismatch")
+			continue
+		}
 		if !parentHealthyForShadow(acc, parentLookupL2) {
 			filterStats.exclude("shadow_parent_unhealthy")
 			continue
@@ -1364,7 +1395,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
-		if requireCompact {
+		if preferOpenAICompactSupport(requireCompact, requiredCapability, platform) {
 			appendTier := func(out []accountWithLoad, tier int) []accountWithLoad {
 				for _, item := range available {
 					if openAICompactSupportTier(item.account) == tier {
@@ -1418,7 +1449,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return rateOrder.compare(ordered[i], ordered[j]) < 0
 			})
 		}
-		if requireCompact {
+		if preferOpenAICompactSupport(requireCompact, requiredCapability, platform) {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
 		}
 		for _, acc := range ordered {
@@ -1468,7 +1499,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			return rateOrder.compare(candidates[i], candidates[j]) < 0
 		})
 	}
-	if requireCompact {
+	if preferOpenAICompactSupport(requireCompact, requiredCapability, platform) {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
 	}
 	for _, acc := range candidates {
@@ -1562,7 +1593,8 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccountBeforeProfit(
 		fresh = current
 	}
 
-	if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability) {
+	if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability) ||
+		!supportsOpenAIRequestProtocol(fresh, requestedModel, requiredCapability) {
 		return nil
 	}
 	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
@@ -1614,7 +1646,8 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
 			return nil
 		}
-		if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, account, platform, requestedModel, requireCompact, requiredCapability) {
+		if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, account, platform, requestedModel, requireCompact, requiredCapability) ||
+			!supportsOpenAIRequestProtocol(account, requestedModel, requiredCapability) {
 			return nil
 		}
 		if s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, account) {
@@ -1639,7 +1672,8 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !latest.IsPrivacySet() {
 		return nil
 	}
-	if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, latest, platform, requestedModel, requireCompact, requiredCapability) {
+	if !isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx, latest, platform, requestedModel, requireCompact, requiredCapability) ||
+		!supportsOpenAIRequestProtocol(latest, requestedModel, requiredCapability) {
 		return nil
 	}
 	if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {

@@ -15,6 +15,19 @@ const openAINativeCompactionV2Key = "openai_native_compaction_v2"
 
 const openAIRemoteCompactionV2Feature = "remote_compaction_v2"
 
+const OpenAINativeCompactionUnsupportedReason GatewayFailureReason = "native_compaction_unsupported"
+
+func newOpenAINativeCompactionUnsupportedError() *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode:        http.StatusBadRequest,
+		Stage:             GatewayFailureStageRequestCapability,
+		Scope:             GatewayFailureScopeRequest,
+		Reason:            OpenAINativeCompactionUnsupportedReason,
+		NextAccountAction: NextAccountRetry,
+		ClientMessage:     "The selected upstream protocol or endpoint does not support native remote compaction v2",
+	}
+}
+
 // MarkOpenAINativeCompactionV2 由 handler 在识别出原生 v2 压缩请求时调用。
 func MarkOpenAINativeCompactionV2(c *gin.Context) {
 	if c != nil {

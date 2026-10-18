@@ -1105,7 +1105,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		return append(primary, overflow...)
 	}
 
-	if req.RequireCompact {
+	if preferOpenAICompactSupport(req.RequireCompact, req.RequiredCapability, req.Platform) {
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		for _, candidate := range plan.candidates {
@@ -1636,7 +1636,7 @@ func openAICostOverflowExpanded(req OpenAIAccountScheduleRequest, plan openAIAcc
 	if !plan.includeOverflowFallback || plan.topK <= 0 {
 		return false
 	}
-	if !req.RequireCompact {
+	if !preferOpenAICompactSupport(req.RequireCompact, req.RequiredCapability, req.Platform) {
 		return len(plan.candidates) > plan.topK
 	}
 	supported, unknown := 0, 0
@@ -1822,6 +1822,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}
 	if !accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability) {
 		return false, "capability_mismatch"
+	}
+	if !supportsOpenAIRequestProtocol(account, req.RequestedModel, req.RequiredCapability) {
+		return false, "native_compaction_protocol_mismatch"
 	}
 	// 分组利润控制：不合格账号在候选过滤与抢槽后终检阶段即被排除，
 	// 排序/评分/粘性/熔断只在合格账号之间工作；named reason 进入 filter stats。

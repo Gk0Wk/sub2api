@@ -106,6 +106,9 @@ const (
 	// credentials["openai_capabilities"] 配置集。仅用于生图意图的 /v1/responses
 	// 调度，避免把请求调度到会在 forward 阶段被降级为 Chat Completions 的账号（#4417）。
 	OpenAIEndpointCapabilityResponses OpenAIEndpointCapability = "responses"
+	// OpenAIEndpointCapabilityRemoteCompactionV2 表示上游能处理 Responses
+	// 请求体中的 compaction_trigger，而不只是提供普通 /responses。
+	OpenAIEndpointCapabilityRemoteCompactionV2 OpenAIEndpointCapability = "remote_compaction_v2"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1864,6 +1867,17 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	if !a.IsOpenAICompatible() {
 		return false
+	}
+	if capability == OpenAIEndpointCapabilityRemoteCompactionV2 {
+		if a.remoteCompactionV2Capability() == ProviderCapabilityUnsupported {
+			return false
+		}
+		// Grok has its own Responses forwarding path. Model-routed providers
+		// need the mapped model and catalog, checked by the scheduler and Forward.
+		if !a.IsGrok() && !a.routesByModel() && resolveUpstreamProtocol(a, APIProtocolResponses, "", nil) != APIProtocolResponses {
+			return false
+		}
+		return a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions)
 	}
 	if a.IsGrok() {
 		switch capability {

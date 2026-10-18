@@ -261,3 +261,18 @@ func (s *OpenAIGatewayService) fetchModelProtocolCatalog(ctx context.Context, ur
 func (s *OpenAIGatewayService) resolveUpstreamProtocolFor(ctx context.Context, account *Account, inbound, model string) string {
 	return resolveUpstreamProtocol(account, inbound, model, s.modelCatalogProtocols(ctx, account, model))
 }
+
+// cachedModelCatalogProtocols is an observation-only scheduling read. Candidate
+// filtering must not start or wait for a separate /models fetch per account.
+// A cache miss remains unknown until Forward resolves the selected account.
+func cachedModelCatalogProtocols(account *Account, model string) []string {
+	base := strings.TrimSpace(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+	key := modelProtocolCatalogKey(account, buildOpenAIModelsURL(base))
+	upstreamModelProtocols.mu.Lock()
+	defer upstreamModelProtocols.mu.Unlock()
+	entry := upstreamModelProtocols.entries[key]
+	if entry == nil || time.Since(entry.fetchedAt) >= modelProtocolCatalogTTL {
+		return nil
+	}
+	return entry.models[strings.ToLower(strings.TrimSpace(model))]
+}

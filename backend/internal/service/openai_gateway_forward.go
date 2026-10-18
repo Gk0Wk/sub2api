@@ -21,6 +21,11 @@ import (
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
 	ClearActualOpenAIUpstreamEndpoint(c)
+	// Static account capability is checked before upstream side effects. Model
+	// catalog protocol is resolved once below, immediately before dispatch.
+	if isOpenAINativeCompactionV2(c) && !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityRemoteCompactionV2) {
+		return nil, newOpenAINativeCompactionUnsupportedError()
+	}
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
 	}
@@ -183,7 +188,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(routingModel) {
 		return nil, writeOpenCodeUnsupportedModelError(c, false, routingModel)
 	}
-	switch s.resolveUpstreamProtocolFor(ctx, account, APIProtocolResponses, routingModel) {
+	upstreamProtocol := s.resolveUpstreamProtocolFor(ctx, account, APIProtocolResponses, routingModel)
+	if isOpenAINativeCompactionV2(c) && upstreamProtocol != APIProtocolResponses {
+		return nil, newOpenAINativeCompactionUnsupportedError()
+	}
+	switch upstreamProtocol {
 	case APIProtocolAnthropic:
 		// Responses 客户端 × Anthropic 上游：转成 Anthropic 请求走原生端点。不能落到
 		// raw-CC 分支——其 URL 构造会把 anthropic base 当 CC base 用。

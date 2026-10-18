@@ -139,6 +139,13 @@ docs/*
 !docs/ASYNC_IMAGE_TASKS.md
 !docs/BATCH_IMAGE_MVP.md
 !docs/COMPOSITE_GROUPS.md
+!docs/REMOTE_COMPACTION.md
+!docs/releases/
+docs/releases/*
+!docs/releases/unreleased/
+docs/releases/unreleased/*
+!docs/releases/unreleased/2026-10-18-runtime-native-compaction-capability.md
+!docs/releases/unreleased/2026-10-18-test-service-fixtures.md
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/codex-credits.md
