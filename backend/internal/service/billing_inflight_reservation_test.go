@@ -79,6 +79,9 @@ func newInflightEstimateGateway(t *testing.T, channelService *ChannelService) *G
 		billingService: billing,
 		resolver:       NewModelPricingResolver(channelService, billing),
 		channelService: channelService,
+		// Match NewGatewayService: reuse one resolver instead of creating a
+		// cache janitor on every request through the nil-resolver fallback.
+		userGroupRateResolver: newUserGroupRateResolver(nil, nil, 0, nil, "service.gateway"),
 	}
 }
 
