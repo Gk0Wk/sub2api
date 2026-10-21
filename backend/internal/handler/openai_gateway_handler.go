@@ -805,13 +805,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
 		if passthroughFailoverState.nativeCompactionCrossAccountBlocked {
-			h.handleStreamingAwareError(
-				c,
-				http.StatusBadRequest,
-				"compaction_history_unavailable",
-				"Native compaction state cannot be replayed on a different account; resume on the original account or enable summary compaction",
-				streamStarted,
-			)
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.handleStreamingAwareError(c, http.StatusBadRequest, "compaction_history_unavailable",
+				"Native compaction state cannot be replayed on a different account; resume on the original account", streamStarted)
 			return
 		}
 		result, err := func() (*service.OpenAIForwardResult, error) {

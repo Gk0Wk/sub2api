@@ -190,7 +190,7 @@ func TestOpenAICompactionDecisionInvalidatesChangedEndpoint(t *testing.T) {
 	require.Equal(t, openAICompactionExecutionSummary, decision.Execution)
 }
 
-func TestOpenAICompactionHistoricalFlagRemainsKindScopedFallback(t *testing.T) {
+func TestOpenAICompactionHistoricalFlagDoesNotCrossKinds(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
 		ID: 81002, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
@@ -207,11 +207,12 @@ func TestOpenAICompactionHistoricalFlagRemainsKindScopedFallback(t *testing.T) {
 	require.Equal(t, openAICompactionTierVerified, v2.Tier)
 
 	legacy := svc.openAICompactionRequestDecision(context.Background(), account, "gpt-5.4", openAICompactionKindLegacy, true)
-	require.Equal(t, openAICompactionExecutionUnsupported, legacy.Execution)
-	require.Equal(t, ProviderCapabilityUnsupported, legacy.ProviderCapability)
+	require.Equal(t, openAICompactionExecutionNative, legacy.Execution)
+	require.Equal(t, openAICompactionTierUnknown, legacy.Tier)
+	require.Equal(t, ProviderCapabilityUnknown, legacy.ProviderCapability)
 }
 
-func TestOpenAICompactionHistoricalFlagRanksLegacyFallback(t *testing.T) {
+func TestOpenAICompactionHistoricalFlagCannotDecideUnprobedTarget(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	base := func(supported bool) *Account {
 		return &Account{
@@ -223,12 +224,22 @@ func TestOpenAICompactionHistoricalFlagRanksLegacyFallback(t *testing.T) {
 			Extra: map[string]any{"openai_compact_supported": supported, "openai_responses_supported": true},
 		}
 	}
-	require.Equal(t, openAICompactionTierDeclared, svc.openAICompactSupportTier(base(true), "gpt-5.4", openAICompactionKindLegacy))
-	require.Equal(t, openAICompactionTierUnsupported, svc.openAICompactSupportTier(base(false), "gpt-5.4", openAICompactionKindLegacy))
-	require.Equal(t, openAICompactionTierUnsupported, svc.openAICompactSupportTier(base(false), "gpt-5.4", openAICompactionKindV2))
+	for _, supported := range []bool{false, true} {
+		for _, kind := range []string{openAICompactionKindLegacy, openAICompactionKindV2} {
+			account := base(supported)
+			account.Credentials["base_url"] = "https://new-relay.example.test/v1"
+			decision := svc.openAICompactionRequestDecision(context.Background(), account, "unprobed-model", kind, true)
+			require.False(t, decision.VerdictKnown)
+			require.Equal(t, openAICompactionExecutionNative, decision.Execution)
+			require.Equal(t, openAICompactionTierUnknown, decision.Tier)
+			account.Extra[OpenAICompactSummaryEnabledExtraKey] = true
+			decision = svc.openAICompactionRequestDecision(context.Background(), account, "unprobed-model", kind, true)
+			require.Equal(t, openAICompactionExecutionSummary, decision.Execution)
+		}
+	}
 }
 
-func TestOpenAICompactionSchedulersRankVerifiedBeforeHistoricalFallback(t *testing.T) {
+func TestOpenAICompactionSchedulersRankVerifiedBeforeUnknown(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	fallback := newOpenAICompactionDecisionAccount()
 	fallback.ID = 81005
@@ -238,7 +249,7 @@ func TestOpenAICompactionSchedulersRankVerifiedBeforeHistoricalFallback(t *testi
 	verified.ID = 81006
 	recordOpenAICompactionTargetEvidence(t, svc, verified, "gpt-5.4", openAICompactionKindV2, OpenAICompactionProbeVerdictSupported)
 	require.Equal(t, openAICompactionTierVerified, svc.openAICompactSupportTier(verified, "gpt-5.4", openAICompactionKindV2))
-	require.Equal(t, openAICompactionTierDeclared, svc.openAICompactSupportTier(fallback, "gpt-5.4", openAICompactionKindV2))
+	require.Equal(t, openAICompactionTierUnknown, svc.openAICompactSupportTier(fallback, "gpt-5.4", openAICompactionKindV2))
 
 	ordered := svc.prioritizeOpenAICompactAccounts([]*Account{fallback, verified}, "gpt-5.4", openAICompactionKindV2)
 	require.Equal(t, verified.ID, ordered[0].ID)

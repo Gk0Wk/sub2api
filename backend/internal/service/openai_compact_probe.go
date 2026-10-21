@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tidwall/gjson"
 )
@@ -139,51 +138,6 @@ func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
 		}
 	}
 	return false
-}
-
-// buildOpenAICompactProbeExtraUpdates 计算探测结果的账号 extra 更新。
-// result is the v2 streaming contract verdict: a 2xx response without exactly
-// one consumable output_item.done compaction is unsupported.
-func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probeErr error, result openAICompactProbeResult, now time.Time) map[string]any {
-	updates := map[string]any{
-		"openai_compact_checked_at":  now.Format(time.RFC3339),
-		"openai_compact_last_status": nil,
-	}
-
-	if resp != nil {
-		updates["openai_compact_last_status"] = resp.StatusCode
-	}
-
-	switch {
-	case probeErr != nil:
-		updates["openai_compact_last_error"] = truncateString(sanitizeUpstreamErrorMessage(probeErr.Error()), 2048)
-	case resp == nil:
-		updates["openai_compact_last_error"] = "compact probe failed"
-	default:
-		errMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
-		if errMsg == "" && len(body) > 0 {
-			errMsg = strings.TrimSpace(string(body))
-		}
-		if errMsg == "" && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-			errMsg = "HTTP " + strconv.Itoa(resp.StatusCode)
-		}
-		errMsg = truncateString(sanitizeUpstreamErrorMessage(errMsg), 2048)
-		switch {
-		case resp.StatusCode >= 200 && resp.StatusCode < 300 && result == openAICompactProbeSupported:
-			updates["openai_compact_supported"] = true
-			updates["openai_compact_last_error"] = ""
-		case resp.StatusCode >= 200 && resp.StatusCode < 300 && result == openAICompactProbeUnsupported:
-			updates["openai_compact_supported"] = false
-			updates["openai_compact_last_error"] = "upstream completed without exactly one consumable compaction output item"
-		default:
-			if shouldMarkOpenAICompactUnsupported(resp.StatusCode, body) {
-				updates["openai_compact_supported"] = false
-			}
-			updates["openai_compact_last_error"] = errMsg
-		}
-	}
-
-	return updates
 }
 
 func mergeExtraUpdates(base map[string]any, more map[string]any) map[string]any {

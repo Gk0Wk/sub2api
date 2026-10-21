@@ -46,7 +46,7 @@ func (h *OpenAIGatewayHandler) deriveOpenAIForwardAttemptBody(
 		return canonicalBody
 	}
 	if state.accountSwitched && openAIRequestCarriesAccountBoundContinuation(canonicalBody) {
-		sanitized, changed, err := service.SanitizeOpenAIAccountBoundEncryptedContent(canonicalBody)
+		sanitized, changed, err := service.SanitizeOpenAICrossModeFailoverReasoning(canonicalBody)
 		if err != nil {
 			if reqLog != nil {
 				reqLog.Warn("openai.failover_account_bound_encrypted_content_sanitize_failed",
