@@ -371,6 +371,184 @@ func TestApplyOpenAIFastPolicyToBody_GroupForceStillHonorsGlobalPolicy(t *testin
 		"the global filter remains authoritative after the group requests priority")
 }
 
+func TestApplyOpenAIFastPolicyToBody_CompositeDowngradesUnsupportedFastTier(t *testing.T) {
+	t.Parallel()
+
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true,
+		AllowOpenAIFastDowngrade: true,
+	})
+
+	updated, err := svc.applyOpenAIFastPolicyToBody(
+		ctx,
+		account,
+		"gpt-6-astra",
+		[]byte(`{"model":"gpt-6-astra","service_tier":"priority"}`),
+	)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(updated, "service_tier").Exists())
+}
+
+func TestApplyOpenAIFastPolicyToBody_CompositeKeepsUnsupportedFastTierWhenDowngradeDisabled(t *testing.T) {
+	t.Parallel()
+
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true,
+	})
+
+	updated, err := svc.applyOpenAIFastPolicyToBody(
+		ctx,
+		account,
+		"gpt-6-astra",
+		[]byte(`{"model":"gpt-6-astra","service_tier":"priority"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
+}
+
+func TestApplyOpenAIFastPolicyToBody_CompositePreservesSupportedFastTier(t *testing.T) {
+	t.Parallel()
+
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{Models: map[string]UpstreamModelMetadata{
+		"gpt-6-astra": {CodexToolCapabilities: map[string]json.RawMessage{
+			"service_tiers": json.RawMessage(`[{"id":"priority"}]`),
+		}},
+	}})
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true,
+	})
+
+	updated, err := svc.applyOpenAIFastPolicyToBody(
+		ctx,
+		account,
+		"gpt-6-astra",
+		[]byte(`{"model":"gpt-6-astra","service_tier":"fast"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
+}
+
+func TestApplyOpenAIFastPolicyToBody_CompositeForceRejectsUnsupportedFastTier(t *testing.T) {
+	t.Parallel()
+
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true,
+		ForceOpenAIFast: true, AllowOpenAIFastDowngrade: true,
+	})
+
+	_, err := svc.applyOpenAIFastPolicyToBody(
+		ctx,
+		account,
+		"gpt-6-astra",
+		[]byte(`{"model":"gpt-6-astra"}`),
+	)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Contains(t, blocked.Message, "does not support Fast")
+}
+
+func TestSanitizeGroupOpenAIFastDowngrade(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		group  Group
+		wanted bool
+	}{
+		{
+			name:   "composite allows downgrade",
+			group:  Group{Platform: PlatformComposite, AllowOpenAIFastDowngrade: true},
+			wanted: true,
+		},
+		{
+			name:   "openai does not allow downgrade",
+			group:  Group{Platform: PlatformOpenAI, AllowOpenAIFastDowngrade: true},
+			wanted: false,
+		},
+		{
+			name:   "force fast wins",
+			group:  Group{Platform: PlatformComposite, ForceOpenAIFast: true, AllowOpenAIFastDowngrade: true},
+			wanted: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sanitizeGroupOpenAIFast(&tt.group)
+			require.Equal(t, tt.wanted, tt.group.AllowOpenAIFastDowngrade)
+		})
+	}
+}
+
+func TestApplyOpenAIFastPolicyToBody_CompositeForceRejectsFilterPolicy(t *testing.T) {
+	t.Parallel()
+
+	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{Models: map[string]UpstreamModelMetadata{
+		"gpt-6-astra": {CodexToolCapabilities: map[string]json.RawMessage{
+			"service_tiers": json.RawMessage(`[{"id":"priority"}]`),
+		}},
+	}})
+	ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{
+		ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true, ForceOpenAIFast: true,
+	})
+
+	_, err := svc.applyOpenAIFastPolicyToBody(
+		ctx,
+		account,
+		"gpt-6-astra",
+		[]byte(`{"model":"gpt-6-astra","service_tier":"priority"}`),
+	)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Contains(t, blocked.Message, "policy would remove service_tier")
+}
+
 func TestApplyOpenAIFastPolicyToBody_GroupForceRequiresHydratedGroup(t *testing.T) {
 	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}

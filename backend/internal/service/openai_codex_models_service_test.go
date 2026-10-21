@@ -515,6 +515,67 @@ func TestBuildCodexModelsManifestAdvertisesPriorityServiceTierForFastGPTModels(t
 	}
 }
 
+func TestBuildCodexModelsManifestPreservesAstraPriorityOverStaleMetadata(t *testing.T) {
+	t.Parallel()
+
+	account := Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url":      "https://relay.example/v1",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		},
+	}
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+		Models: map[string]UpstreamModelMetadata{
+			"gpt-6-astra": {
+				CodexToolCapabilities: map[string]json.RawMessage{
+					"service_tiers": json.RawMessage(`[]`),
+				},
+			},
+		},
+	})
+
+	body, err := buildCodexModelsManifestForAccounts(
+		PlatformOpenAI,
+		[]string{"gpt-6-astra"},
+		[]Account{account},
+		nil,
+		nil,
+		true,
+	)
+	require.NoError(t, err)
+	models := decodeCodexManifestModels(t, body)
+	require.Len(t, models, 1)
+	require.EqualValues(t, 1_050_000, models[0]["context_window"])
+	require.EqualValues(t, 1_050_000, models[0]["max_context_window"])
+	require.Equal(t, []any{
+		map[string]any{
+			"id":          "priority",
+			"name":        "Fast",
+			"description": "Priority processing for lower latency.",
+		},
+	}, models[0]["service_tiers"])
+}
+
+func TestMergeConfiguredCodexServiceTiersPreservesExistingTiers(t *testing.T) {
+	t.Parallel()
+
+	got, err := mergeConfiguredCodexServiceTiers(
+		json.RawMessage(`[
+			{"id":"priority","name":"Fast","description":"Priority processing for lower latency."},
+			{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}
+		]`),
+		configuredCodexServiceTiersForModel("gpt-6-astra"),
+	)
+	require.NoError(t, err)
+	require.JSONEq(t, `[
+		{"id":"priority","name":"Fast","description":"Priority processing for lower latency."},
+		{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}
+	]`, string(got))
+}
+
 // Scenario: GPT-5.6 Sol 在 Fast 之外额外声明 ultrafast service tier。
 func TestBuildCodexModelsManifestAdvertisesUltrafastServiceTierForSol(t *testing.T) {
 	t.Parallel()
