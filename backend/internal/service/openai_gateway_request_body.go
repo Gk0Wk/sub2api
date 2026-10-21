@@ -2155,23 +2155,20 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 		body = updated
 	}
 	rawTier := gjson.GetBytes(body, "service_tier").String()
+	normTier := normalizedOpenAIServiceTierValue(rawTier)
 	if rawTier == "" {
-		if s.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, model) {
-			updated, err := sjson.SetBytes(body, "service_tier", OpenAIFastTierPriority)
-			if err != nil {
-				return body, fmt.Errorf("force missing service_tier priority on body: %w", err)
-			}
-			body = updated
-			rawTier = OpenAIFastTierPriority
-		} else {
+		if account == nil || account.Platform != PlatformOpenAI {
 			return body, nil
 		}
+		normTier = OpenAIFastTierMissing
 	}
-	normTier := normalizedOpenAIServiceTierValue(rawTier)
 	if normTier == "" {
 		return body, nil
 	}
 	action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, model, normTier)
+	if normTier == OpenAIFastTierMissing && action != OpenAIFastPolicyActionForcePriority {
+		return body, nil
+	}
 	if action == BetaPolicyActionBlock {
 		msg := errMsg
 		if msg == "" {
@@ -2271,59 +2268,13 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 	if frameType != "response.create" {
 		return frame, nil, nil
 	}
-	if openAIGroupForcesFast(ctx, account) {
-		updated, err := sjson.SetBytes(frame, "service_tier", OpenAIFastTierPriority)
-		if err != nil {
-			return frame, nil, fmt.Errorf("force group service_tier priority in ws frame: %w", err)
-		}
-		frame = updated
-	}
-	rawTier := gjson.GetBytes(frame, "service_tier").String()
-	if rawTier == "" {
-		if s.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, model) {
-			updated, err := sjson.SetBytes(frame, "service_tier", OpenAIFastTierPriority)
-			if err != nil {
-				return frame, nil, fmt.Errorf("force missing service_tier priority in ws frame: %w", err)
-			}
-			frame = updated
-			rawTier = OpenAIFastTierPriority
-		} else {
-			return frame, nil, nil
-		}
-	}
-	normTier := normalizedOpenAIServiceTierValue(rawTier)
-	if normTier == "" {
-		return frame, nil, nil
-	}
-	action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, model, normTier)
-	if action == BetaPolicyActionBlock {
-		msg := errMsg
-		if msg == "" {
-			msg = fmt.Sprintf("openai service_tier=%s is not allowed for model %s", normTier, model)
-		}
-		return frame, &OpenAIFastBlockedError{Message: msg}, nil
-	}
-	effectiveTier, remove, err := s.resolveOpenAIServiceTierForAccount(ctx, account, model, action, normTier)
+	updated, err := s.applyOpenAIFastPolicyToBody(ctx, account, model, frame)
 	if err != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(err, &blocked) {
 			return frame, blocked, nil
 		}
 		return frame, nil, err
-	}
-	if remove {
-		trimmed, err := sjson.DeleteBytes(frame, "service_tier")
-		if err != nil {
-			return frame, nil, fmt.Errorf("strip service_tier from ws frame: %w", err)
-		}
-		return trimmed, nil, nil
-	}
-	if effectiveTier == rawTier {
-		return frame, nil, nil
-	}
-	updated, err := sjson.SetBytes(frame, "service_tier", effectiveTier)
-	if err != nil {
-		return frame, nil, fmt.Errorf("apply effective service_tier in ws frame: %w", err)
 	}
 	return updated, nil, nil
 }

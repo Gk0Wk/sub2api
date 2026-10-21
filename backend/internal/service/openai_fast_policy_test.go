@@ -205,6 +205,35 @@ func TestApplyOpenAIFastPolicyToBody_DefaultPassesPriorityAndFast(t *testing.T) 
 	require.Equal(t, string(body), string(updated))
 }
 
+func TestApplyOpenAIFastPolicy_MissingRuleDoesNotReevaluateInjectedTier(t *testing.T) {
+	for _, explicitAction := range []string{BetaPolicyActionBlock, BetaPolicyActionFilter} {
+		t.Run(explicitAction, func(t *testing.T) {
+			svc := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{
+				{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll},
+				{ServiceTier: OpenAIFastTierPriority, Action: explicitAction, Scope: BetaPolicyScopeAll},
+			}})
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			ctx := context.Background()
+			require.True(t, svc.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, "gpt-5.5"))
+			body := []byte(`{"type":"response.create","model":"gpt-5.5","input":"hello"}`)
+			updated, err := svc.applyOpenAIFastPolicyToBody(ctx, account, "gpt-5.5", body)
+			require.NoError(t, err)
+			require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(updated, "service_tier").String())
+			frame, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, "gpt-5.5", body)
+			require.NoError(t, err)
+			require.Nil(t, blocked)
+			require.JSONEq(t, string(updated), string(frame))
+			explicit, err := svc.applyOpenAIFastPolicyToBody(ctx, account, "gpt-5.5", []byte(`{"model":"gpt-5.5","service_tier":"priority"}`))
+			if explicitAction == BetaPolicyActionBlock {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.False(t, gjson.GetBytes(explicit, "service_tier").Exists())
+			}
+		})
+	}
+}
+
 func TestApplyOpenAIFastPolicyToBody_ForcePriorityInjectsMissingTier(t *testing.T) {
 	settings := &OpenAIFastPolicySettings{
 		Rules: []OpenAIFastPolicyRule{{
