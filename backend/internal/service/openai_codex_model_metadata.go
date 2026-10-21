@@ -108,6 +108,9 @@ func accountCodexToolCapabilities(account *Account, modelID string) map[string]j
 		}
 		applyCodexToolCapabilities(capabilities, map[string]json.RawMessage{"service_tiers": encoded}, false)
 	}
+	if len(capabilities["service_tiers"]) == 0 {
+		capabilities["service_tiers"] = json.RawMessage("[]")
+	}
 	return capabilities
 }
 

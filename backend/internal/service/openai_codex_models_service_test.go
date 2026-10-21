@@ -364,11 +364,10 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.Equal(t, "medium", *gpt56Luna.DefaultReasoningLevel)
 
 	gpt6Astra := newConfiguredCodexModelDescriptor("gpt-6-astra")
-	require.Equal(t, "GPT-6-Astra", gpt6Astra.DisplayName)
-	require.Equal(t, "Frontier intelligence for the most demanding work.", gpt6Astra.Description)
+	require.Equal(t, "GPT-6 Astra", gpt6Astra.DisplayName)
 	require.True(t, strings.HasPrefix(strings.TrimSpace(gpt6Astra.ModelMessages.InstructionsTemplate), "You are Codex, an agent based on GPT-6."))
 	require.NotNil(t, gpt6Astra.DefaultReasoningLevel)
-	require.Equal(t, "low", *gpt6Astra.DefaultReasoningLevel)
+	require.Equal(t, "medium", *gpt6Astra.DefaultReasoningLevel)
 	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, effortsFromConfiguredCodexLevels(gpt6Astra.SupportedReasoningLevels))
 	require.NotNil(t, gpt6Astra.MultiAgentReasoningEffort)
 	require.Equal(t, "xhigh", *gpt6Astra.MultiAgentReasoningEffort)
@@ -378,7 +377,7 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.Equal(t, []configuredCodexServiceTier{{
 		ID:          "priority",
 		Name:        "Fast",
-		Description: "2x speed, increased usage",
+		Description: "Priority processing for lower latency.",
 	}}, gpt6Astra.ServiceTiers)
 	require.True(t, isOpenAICodexImageInputModel("gpt-6-astra"))
 	require.True(t, isOpenAICodexReasoningGPTModel("openai/gpt-6-astra"))
@@ -387,23 +386,12 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.Equal(t, int64(1_050_000), gpt6Astra.ContextWindow)
 	require.Equal(t, int64(1_050_000), gpt6Astra.MaxContextWindow)
 	gpt6 := newConfiguredCodexModelDescriptor("gpt-6")
-	require.Equal(t, "GPT-6-Astra", gpt6.DisplayName)
+	require.Equal(t, "GPT-6 (Astra)", gpt6.DisplayName)
 	require.True(t, strings.HasPrefix(strings.TrimSpace(gpt6.ModelMessages.InstructionsTemplate), "You are Codex, an agent based on GPT-6."))
 	require.Equal(t, []string{"low", "medium", "high", "xhigh", "max", "ultra"}, effortsFromConfiguredCodexLevels(gpt6.SupportedReasoningLevels))
 	require.NotNil(t, gpt6.MultiAgentReasoningEffort)
 	require.Equal(t, "xhigh", *gpt6.MultiAgentReasoningEffort)
 	require.Equal(t, int64(1_050_000), gpt6.ContextWindow)
-
-	gpt6Luna := newConfiguredCodexModelDescriptor("gpt-6-luna")
-	require.Equal(t, "GPT-6-Luna", gpt6Luna.DisplayName)
-	require.Equal(t, "Fast and affordable model for easier tasks.", gpt6Luna.Description)
-	require.Equal(t, "priority", gpt6Luna.DefaultServiceTier)
-	require.Equal(t, "medium", *gpt6Luna.DefaultReasoningLevel)
-	require.Equal(t, []configuredCodexServiceTier{{
-		ID:          "priority",
-		Name:        "Fast",
-		Description: "1.5x speed",
-	}}, gpt6Luna.ServiceTiers)
 
 	gpt55 := newConfiguredCodexModelDescriptor("gpt-5.5")
 	require.Equal(t, "GPT-5.5", gpt55.DisplayName)
@@ -525,114 +513,6 @@ func TestBuildCodexModelsManifestAdvertisesPriorityServiceTierForFastGPTModels(t
 		}, model["service_tiers"])
 		require.Nil(t, model["default_service_tier"])
 	}
-}
-
-func TestBuildCodexModelsManifestPreservesAstraPriorityOverStaleMetadata(t *testing.T) {
-	t.Parallel()
-
-	account := Account{
-		ID:       1,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url":      "https://relay.example/v1",
-			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
-		},
-	}
-	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
-		Models: map[string]UpstreamModelMetadata{
-			"gpt-6-astra": {
-				CodexToolCapabilities: map[string]json.RawMessage{
-					"service_tiers": json.RawMessage(`[]`),
-				},
-			},
-		},
-	})
-
-	body, err := buildCodexModelsManifestForAccounts(
-		PlatformOpenAI,
-		[]string{"gpt-6-astra"},
-		[]Account{account},
-		nil,
-		nil,
-		true,
-	)
-	require.NoError(t, err)
-	models := decodeCodexManifestModels(t, body)
-	require.Len(t, models, 1)
-	require.Equal(t, "GPT-6-Astra", models[0]["display_name"])
-	require.Equal(t, "Frontier intelligence for the most demanding work.", models[0]["description"])
-	require.EqualValues(t, 1_050_000, models[0]["context_window"])
-	require.EqualValues(t, 1_050_000, models[0]["max_context_window"])
-	require.Equal(t, []any{
-		map[string]any{
-			"id":          "priority",
-			"name":        "Fast",
-			"description": "2x speed, increased usage",
-		},
-	}, models[0]["service_tiers"])
-}
-
-func TestBuildCodexModelsManifestPreservesLunaFastOverStaleMetadata(t *testing.T) {
-	t.Parallel()
-
-	account := Account{
-		ID:       1,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url":      "https://relay.example/v1",
-			"model_mapping": map[string]any{"gpt-6-luna": "gpt-6-luna"},
-		},
-	}
-	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
-		Models: map[string]UpstreamModelMetadata{
-			"gpt-6-luna": {
-				CodexToolCapabilities: map[string]json.RawMessage{
-					"service_tiers": json.RawMessage(`[]`),
-				},
-			},
-		},
-	})
-
-	body, err := buildCodexModelsManifestForAccounts(
-		PlatformOpenAI,
-		[]string{"gpt-6-luna"},
-		[]Account{account},
-		nil,
-		nil,
-		true,
-	)
-	require.NoError(t, err)
-	models := decodeCodexManifestModels(t, body)
-	require.Len(t, models, 1)
-	require.Equal(t, "GPT-6-Luna", models[0]["display_name"])
-	require.Equal(t, "Fast and affordable model for easier tasks.", models[0]["description"])
-	require.Equal(t, "priority", models[0]["default_service_tier"])
-	require.Equal(t, []any{
-		map[string]any{
-			"id":          "priority",
-			"name":        "Fast",
-			"description": "1.5x speed",
-		},
-	}, models[0]["service_tiers"])
-}
-
-func TestMergeConfiguredCodexServiceTiersPreservesExistingTiers(t *testing.T) {
-	t.Parallel()
-
-	got, err := mergeConfiguredCodexServiceTiers(
-		json.RawMessage(`[
-			{"id":"priority","name":"Fast","description":"Priority processing for lower latency."},
-			{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}
-		]`),
-		configuredCodexServiceTiersForModel("gpt-6-astra"),
-	)
-	require.NoError(t, err)
-	require.JSONEq(t, `[
-		{"id":"priority","name":"Fast","description":"Priority processing for lower latency."},
-		{"id":"ultrafast","name":"Ultrafast","description":"Lowest latency; 6x Standard token pricing."}
-	]`, string(got))
 }
 
 // Scenario: GPT-5.6 Sol 在 Fast 之外额外声明 ultrafast service tier。

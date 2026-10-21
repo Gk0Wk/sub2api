@@ -1065,6 +1065,42 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 	require.Contains(t, string(upstream.lastBody), `"stream":true`)
 }
 
+func TestOpenAIGatewayService_MissingFastRuleAcrossForwardPaths(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, explicitAction := range []string{BetaPolicyActionBlock, BetaPolicyActionFilter} {
+			t.Run(fmt.Sprintf("passthrough_%t_%s", passthrough, explicitAction), func(t *testing.T) {
+				gin.SetMode(gin.TestMode)
+				recorder := httptest.NewRecorder()
+				requestContext, _ := gin.CreateTestContext(recorder)
+				requestContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				requestContext.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+				upstream := &httpUpstreamRecorder{resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fast\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")),
+				}}
+				svc := newOpenAIGatewayServiceWithSettings(t, &OpenAIFastPolicySettings{Rules: []OpenAIFastPolicyRule{
+					{ServiceTier: OpenAIFastTierMissing, Action: OpenAIFastPolicyActionForcePriority, Scope: BetaPolicyScopeAll},
+					{ServiceTier: OpenAIFastTierPriority, Action: explicitAction, Scope: BetaPolicyScopeAll},
+				}})
+				svc.cfg = &config.Config{}
+				svc.httpUpstream = upstream
+				account := &Account{
+					ID: 123, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+					Credentials: map[string]any{"access_token": "fixture-token", "chatgpt_account_id": "fixture-account"},
+					Extra:       map[string]any{"openai_passthrough": passthrough, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+					Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+				}
+				result, err := svc.Forward(context.Background(), requestContext, account,
+					[]byte(`{"model":"gpt-5.6-sol","stream":false,"input":[{"role":"user","content":"hello"}]}`))
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.Equal(t, OpenAIFastTierPriority, gjson.GetBytes(upstream.lastBody, "service_tier").String())
+			})
+		}
+	}
+}
+
 func TestOpenAIGatewayService_OAuthLegacy_GroupForceOpenAIFastInjectsMissingTier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
