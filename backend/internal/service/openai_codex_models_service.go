@@ -532,6 +532,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.SupportVerbosity = true
 			descriptor.DefaultVerbosity = &defaultVerbosity
 		}
+		applyOfficialOpenAIGPT6Presentation(&descriptor, modelID)
 	}
 
 	if openai.IsGPT61SolModelSpelling(modelID) {
@@ -553,7 +554,7 @@ func configuredCodexServiceTiersForModel(modelID string) []configuredCodexServic
 		tiers = append(tiers, configuredCodexServiceTier{
 			ID:          OpenAIFastTierPriority,
 			Name:        "Fast",
-			Description: "Priority processing for lower latency.",
+			Description: configuredCodexPriorityServiceTierDescription(modelID),
 		})
 	}
 	if configuredCodexSupportsUltrafastServiceTier(modelID) {
@@ -564,6 +565,39 @@ func configuredCodexServiceTiersForModel(modelID string) []configuredCodexServic
 		})
 	}
 	return tiers
+}
+
+func configuredCodexPriorityServiceTierDescription(modelID string) string {
+	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
+	switch {
+	case isOpenAIGPT6AstraModel(normalized), openai.IsGPT61SolModelSpelling(normalized):
+		return "2x speed, increased usage"
+	case normalized == "gpt-6-luna":
+		return "1.5x speed"
+	case normalized == "gpt-5.6-sol":
+		return "1.5x speed, increased usage"
+	default:
+		return "Priority processing for lower latency."
+	}
+}
+
+func applyOfficialOpenAIGPT6Presentation(descriptor *configuredCodexModelDescriptor, modelID string) {
+	if descriptor == nil {
+		return
+	}
+	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
+	switch {
+	case isOpenAIGPT6AstraModel(normalized):
+		descriptor.DisplayName = "GPT-6-Astra"
+		descriptor.Description = "Frontier intelligence for the most demanding work."
+		defaultReasoningLevel := "low"
+		descriptor.DefaultReasoningLevel = &defaultReasoningLevel
+		descriptor.SupportedReasoningLevels = configuredCodexGPTReasoningLevels(normalized)
+	case normalized == "gpt-6-luna":
+		descriptor.DisplayName = "GPT-6-Luna"
+		descriptor.Description = "Fast and affordable model for easier tasks."
+		descriptor.DefaultServiceTier = OpenAIFastTierPriority
+	}
 }
 
 func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
@@ -630,13 +664,29 @@ func claudeCodexDefaultReasoningLevel(levels []configuredCodexReasoningLevel) st
 }
 
 func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasoningLevel {
+	normalized := getNormalizedCodexModel(modelID)
+	if isOpenAIGPT6AstraModel(modelID) || normalized == "gpt-6-luna" {
+		levels := []configuredCodexReasoningLevel{
+			{Effort: "low", Description: "Fast responses with lighter reasoning"},
+			{Effort: "medium", Description: "Balances speed and reasoning depth for everyday tasks"},
+			{Effort: "high", Description: "Greater reasoning depth for complex problems"},
+			{Effort: "xhigh", Description: "Extra high reasoning depth for complex problems"},
+			{Effort: "max", Description: "Maximum reasoning depth for the hardest problems"},
+		}
+		if isOpenAIGPT6AstraModel(modelID) {
+			levels = append(levels, configuredCodexReasoningLevel{
+				Effort:      "ultra",
+				Description: "Maximum reasoning with automatic task delegation",
+			})
+		}
+		return levels
+	}
 	levels := []configuredCodexReasoningLevel{
 		{Effort: "low", Description: "Fast responses with lighter reasoning"},
 		{Effort: "medium", Description: "Balanced reasoning for most coding tasks"},
 		{Effort: "high", Description: "Greater reasoning depth for coding and agent tasks"},
 		{Effort: "xhigh", Description: "Extra-high reasoning depth for difficult tasks"},
 	}
-	normalized := getNormalizedCodexModel(modelID)
 	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6Model(modelID) {
 		levels = append(levels, configuredCodexReasoningLevel{
 			Effort:      "max",
@@ -1004,15 +1054,15 @@ func buildCodexModelsManifest(
 			return nil, err
 		}
 		capabilities := modelMetadata[modelID].CodexToolCapabilities
-		if len(capabilities) > 0 || isOpenAIGPT6AstraModel(metadataModelID) {
+		if len(capabilities) > 0 || isOpenAIGPT6Model(metadataModelID) {
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(encoded, &fields); err != nil {
 				return nil, err
 			}
 			applyCodexToolCapabilities(fields, capabilities, true)
-			// Astra's model identity guarantees Fast even when an older account
+			// GPT-6 model identities guarantee Fast even when an older account
 			// snapshot omitted or projected an empty service-tier declaration.
-			if isOpenAIGPT6AstraModel(metadataModelID) {
+			if isOpenAIGPT6Model(metadataModelID) {
 				serviceTiers, err := mergeConfiguredCodexServiceTiers(
 					fields["service_tiers"],
 					configuredCodexServiceTiersForModel(metadataModelID),
