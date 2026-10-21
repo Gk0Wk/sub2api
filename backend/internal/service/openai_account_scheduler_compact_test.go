@@ -37,9 +37,11 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 			Concurrency: 1,
 			Priority:    0,
 			Credentials: map[string]any{"api_protocol": APIProtocolResponses},
-			Extra:       map[string]any{"openai_compact_supported": true}, // tier=2
+			Extra:       map[string]any{},
 		},
 	}
+	accounts[1].Credentials["api_key"] = "fixture-value"
+	recordOpenAICompactionTargetEvidence(t, &OpenAIGatewayService{}, &accounts[1], "gpt-5.4", openAICompactionKindLegacy, OpenAICompactionProbeVerdictSupported)
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LoadBatchEnabled = false
 	svc := &OpenAIGatewayService{
@@ -93,9 +95,11 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 			Concurrency: 1,
 			Priority:    0,
 			Credentials: map[string]any{"api_protocol": APIProtocolResponses},
-			Extra:       map[string]any{"openai_compact_supported": false},
+			Extra:       map[string]any{},
 		},
 	}
+	accounts[1].Credentials["api_key"] = "fixture-value"
+	recordOpenAICompactionTargetEvidence(t, &OpenAIGatewayService{}, &accounts[1], "gpt-5.4", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LoadBatchEnabled = false
 	svc := &OpenAIGatewayService{
@@ -233,7 +237,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LegacyCompactionKeepsCo
 	for _, advanced := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy_scheduler", true: "advanced_scheduler"}[advanced], func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
-			svc := newOpenAICompactionSchedulerTestService([]Account{
+			accounts := []Account{
 				{
 					ID:          71015,
 					Platform:    PlatformOpenAI,
@@ -258,7 +262,10 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LegacyCompactionKeepsCo
 						"openai_responses_supported": true,
 					},
 				},
-			}, advanced)
+			}
+			accounts[0].Credentials = map[string]any{"api_key": "fixture-value", "api_protocol": APIProtocolResponses}
+			recordOpenAICompactionTargetEvidence(t, &OpenAIGatewayService{}, &accounts[0], "gpt-5.6-sol", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
+			svc := newOpenAICompactionSchedulerTestService(accounts, advanced)
 
 			selection, err := selectOpenAICompactionSchedulerTestAccount(t, svc, 91010, true)
 			require.ErrorIs(t, err, ErrNoAvailableCompactAccounts)
@@ -310,6 +317,7 @@ func TestOpenAIGatewayService_AdvancedLegacyCompactKeepsSnapshotUnsupportedDiagn
 	}
 	decisionSvc := &OpenAIGatewayService{}
 	recordOpenAICompactionTargetEvidence(t, decisionSvc, &stale, "gpt-5.6-sol", openAICompactionKindV2, OpenAICompactionProbeVerdictSupported)
+	recordOpenAICompactionTargetEvidence(t, decisionSvc, &stale, "gpt-5.6-sol", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
 	dbAccount := *stale.CloneForTest()
 
 	selection, err := selectAdvancedLegacyCompactFromSnapshot(t, stale, dbAccount)
@@ -328,7 +336,7 @@ func TestOpenAIGatewayService_AdvancedLegacyCompactPreservesDBCompactRejection(t
 	decisionSvc := &OpenAIGatewayService{}
 	recordOpenAICompactionTargetEvidence(t, decisionSvc, &stale, "gpt-5.6-sol", openAICompactionKindV2, OpenAICompactionProbeVerdictSupported)
 	dbAccount := *stale.CloneForTest()
-	dbAccount.Extra["openai_compact_supported"] = false
+	recordOpenAICompactionTargetEvidence(t, decisionSvc, &dbAccount, "gpt-5.6-sol", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
 
 	selection, err := selectAdvancedLegacyCompactFromSnapshot(t, stale, dbAccount)
 	require.Nil(t, selection)
@@ -343,8 +351,11 @@ func TestOpenAIGatewayService_AdvancedLegacyCompactRecoversFromFreshDB(t *testin
 		Credentials: map[string]any{"api_key": "fixture-provider-key", "api_protocol": APIProtocolResponses, "base_url": "https://api.openai.com"},
 		Extra:       map[string]any{"openai_compact_supported": false, "openai_responses_supported": true},
 	}
+	decisionSvc := &OpenAIGatewayService{}
+	recordOpenAICompactionTargetEvidence(t, decisionSvc, &stale, "gpt-5.6-sol", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
 	dbAccount := *stale.CloneForTest()
 	dbAccount.Extra["openai_compact_supported"] = true
+	recordOpenAICompactionTargetEvidence(t, decisionSvc, &dbAccount, "gpt-5.6-sol", openAICompactionKindLegacy, OpenAICompactionProbeVerdictSupported)
 	decision := (&OpenAIGatewayService{}).openAICompactionRequestDecision(
 		context.Background(), &dbAccount, "gpt-5.6-sol", openAICompactionKindLegacy, true,
 	)
@@ -500,7 +511,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Concurrency: 1,
 			Priority:    0,
 			Credentials: map[string]any{"api_protocol": APIProtocolResponses},
-			Extra:       map[string]any{"openai_compact_supported": false}, // tier=0
+			Extra:       map[string]any{},
 		},
 		{
 			ID:          71021,
@@ -514,6 +525,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Extra:       map[string]any{}, // unknown -> tier=1
 		},
 	}
+	accounts[0].Credentials["api_key"] = "fixture-value"
+	recordOpenAICompactionTargetEvidence(t, &OpenAIGatewayService{}, &accounts[0], "gpt-5.4", openAICompactionKindLegacy, OpenAICompactionProbeVerdictUnsupported)
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LoadBatchEnabled = false
 	svc := &OpenAIGatewayService{
@@ -600,8 +613,8 @@ func TestOpenAICompactSupportTier(t *testing.T) {
 		{name: "non openai", account: &Account{Platform: PlatformAnthropic}, want: 0},
 		{name: "grok", account: &Account{Platform: PlatformGrok}, want: openAICompactionTierVerified},
 		{name: "openai unknown", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{}}, want: openAICompactionTierUnknown},
-		{name: "openai supported", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}, want: openAICompactionTierDeclared},
-		{name: "openai unsupported", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: openAICompactionTierUnsupported},
+		{name: "historical supported remains unknown", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}, want: openAICompactionTierUnknown},
+		{name: "historical unsupported remains unknown", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": false}}, want: openAICompactionTierUnknown},
 		{name: "force on remains an attempt", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOn}}, want: openAICompactionTierUnknown},
 		{name: "force off overrides probe true", account: &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_mode": OpenAICompactModeForceOff, "openai_compact_supported": true}}, want: openAICompactionTierUnsupported},
 	}

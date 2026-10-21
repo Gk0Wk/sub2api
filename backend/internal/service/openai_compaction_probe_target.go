@@ -373,7 +373,7 @@ func (s *OpenAIGatewayService) resolveOpenAICompactionTargetRoute(ctx context.Co
 	}
 	protocol := strings.TrimSpace(protocolOverride)
 	known := protocol != ""
-	if known == false {
+	if !known {
 		protocol, known = resolveOpenAICompactionTargetProtocol(ctx, s, account, routeModel, refreshCatalog)
 	}
 	model := routeModel
@@ -396,7 +396,7 @@ func (s *OpenAIGatewayService) resolveOpenAICompactionTargetRoute(ctx context.Co
 		LogicalAccountID:   account.ID,
 		FingerprintVersion: 1,
 	}
-	if known == false {
+	if !known {
 		target.Protocol = ""
 		return target, false, nil
 	}
@@ -422,7 +422,7 @@ func (s *OpenAIGatewayService) resolveOpenAICompactionTargetWithCredentialProtoc
 	if err != nil {
 		return OpenAICompactionProbeTarget{}, err
 	}
-	if known == false {
+	if !known {
 		return OpenAICompactionProbeTarget{}, fmt.Errorf("compaction target protocol is unknown: %w", ErrOpenAICompactionProtocolUnknown)
 	}
 	credentialSource, credentialAccountID := openAICompactionCredentialSource(account, credentialAccount)
@@ -475,7 +475,7 @@ func (s *OpenAIGatewayService) resolveOpenAICompactionTargetFromProjection(accou
 		if account.ParentAccountID != nil {
 			credentialAccountID = *account.ParentAccountID
 		}
-	} else if projectedDigestAvailable == false {
+	} else if !projectedDigestAvailable {
 		// Full accounts without a scheduler projection still carry their real
 		// credential identity. Projected accounts always include this key, even
 		// when the identity could not be derived, and must remain unknown.
@@ -505,19 +505,6 @@ func openAICompactionProviderCapability(account *Account, kind string) ProviderC
 	if account == nil {
 		return ProviderCapabilityUnknown
 	}
-	if account.IsOpenAI() && (kind == openAICompactionKindV2 || kind == openAICompactionKindLegacy) {
-		if account.Extra == nil {
-			return ProviderCapabilityUnknown
-		}
-		supported, ok := account.Extra["openai_compact_supported"].(bool)
-		if ok == false {
-			return ProviderCapabilityUnknown
-		}
-		if supported {
-			return ProviderCapabilitySupported
-		}
-		return ProviderCapabilityUnsupported
-	}
 	if kind != openAICompactionKindV2 {
 		return ProviderCapabilityUnknown
 	}
@@ -546,7 +533,7 @@ func (s *OpenAIGatewayService) openAICompactionRequestDecisionWithProtocol(ctx c
 		decision.Reason = "grok_native"
 		return decision
 	}
-	if account.IsOpenAICompatible() == false {
+	if !account.IsOpenAICompatible() {
 		decision.Reason = "account_not_openai_compatible"
 		return decision
 	}
@@ -587,7 +574,7 @@ func (s *OpenAIGatewayService) openAICompactionRequestDecisionWithProtocol(ctx c
 	if protocolKnown {
 		protocolAllowsNative = target.Protocol == APIProtocolResponses
 	}
-	nativeAllowed := protocolAllowsNative
+	var nativeAllowed bool
 	switch decision.Mode {
 	case OpenAICompactModeForceOff:
 		nativeAllowed = false
@@ -597,7 +584,7 @@ func (s *OpenAIGatewayService) openAICompactionRequestDecisionWithProtocol(ctx c
 		nativeAllowed = protocolAllowsNative
 	default:
 		switch {
-		case protocolAllowsNative == false:
+		case !protocolAllowsNative:
 			nativeAllowed = false
 		case decision.VerdictKnown && decision.Verdict == OpenAICompactionProbeVerdictSupported:
 			nativeAllowed = true

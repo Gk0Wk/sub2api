@@ -680,8 +680,8 @@ func lockAndMergeAccountProbeExtra(
 				false
 			),
 			extra -> 'opencode_go_usage_auto_refresh',
-		extra -> 'opencode_go_usage_snapshot',
-		extra
+			extra -> 'opencode_go_usage_snapshot',
+			extra
 		FROM accounts
 		WHERE id = $1 AND deleted_at IS NULL
 		FOR NO KEY UPDATE
@@ -840,12 +840,14 @@ func lockAndMergeAccountProbeExtra(
 			}
 		}
 	}
-	currentExtraMap, ok, err := decodeAccountExtraJSON(currentExtra)
-	if err != nil {
-		return nil, err
+	var currentExtraMap map[string]any
+	if len(currentExtra) > 0 {
+		if err := json.Unmarshal(currentExtra, &currentExtraMap); err != nil {
+			return nil, err
+		}
 	}
-	if ok && identityUnchanged && service.OpenAICompactionProbeRouteMaterialEqual(account.Extra, currentExtraMap.(map[string]any)) {
-		if targets, exists := currentExtraMap.(map[string]any)[service.OpenAICompactionProbeTargetsExtraKey]; exists {
+	if identityUnchanged && service.OpenAICompactionProbeRouteMaterialEqual(account.Extra, currentExtraMap) {
+		if targets, exists := currentExtraMap[service.OpenAICompactionProbeTargetsExtraKey]; exists {
 			extra[service.OpenAICompactionProbeTargetsExtraKey] = targets
 		}
 	}

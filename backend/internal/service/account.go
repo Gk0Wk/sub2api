@@ -1954,6 +1954,9 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return false
 	}
 	if capability == OpenAIEndpointCapabilityRemoteCompactionV2 {
+		if a.GetOpenAICompactMode() == OpenAICompactModeForceOff {
+			return false
+		}
 		if a.remoteCompactionV2Capability() == ProviderCapabilityUnsupported {
 			return false
 		}

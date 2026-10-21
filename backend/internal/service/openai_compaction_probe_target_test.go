@@ -389,6 +389,11 @@ func TestClassifyOpenAICompactionProbeObservation(t *testing.T) {
 		{"model missing code", http.StatusNotFound, `{"error":{"code":"model_not_found","message":"does not exist"}}`, nil, openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnknown, openAICompactionErrorModelNotFound},
 		{"endpoint unsupported", http.StatusNotFound, `404 page not found`, nil, openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnsupported, openAICompactionErrorEndpointUnsupported},
 		{"supported", http.StatusOK, "ok", nil, openAICompactProbeSupported, OpenAICompactionProbeVerdictSupported, openAICompactionErrorNone},
+		{"no response", 0, "", nil, openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnknown, openAICompactionErrorTransport},
+		{"transport failure", 0, "", errors.New("dial failed"), openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnknown, openAICompactionErrorTransport},
+		{"unknown model", http.StatusBadRequest, `{"error":{"message":"unknown model gpt-5.4-openai-compact"}}`, nil, openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnknown, openAICompactionErrorRequest},
+		{"empty unavailable", http.StatusServiceUnavailable, "", nil, openAICompactProbeUnknown, OpenAICompactionProbeVerdictUnknown, openAICompactionErrorUpstream5xx},
+		{"invalid terminal", http.StatusOK, "", nil, openAICompactProbeUnsupported, OpenAICompactionProbeVerdictUnsupported, openAICompactionErrorInvalidContract},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

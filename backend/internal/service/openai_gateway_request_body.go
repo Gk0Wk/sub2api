@@ -470,8 +470,6 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
-		// Native compaction is opaque conversation state, not replayable
-		// reasoning. Never delete it as part of reasoning self-healing.
 		return item, false, true
 	case "reasoning":
 	default:

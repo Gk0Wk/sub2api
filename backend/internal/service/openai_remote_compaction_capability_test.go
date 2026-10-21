@@ -272,10 +272,12 @@ func TestNativeCompactionPrefersProbedOpenAIAccount(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			resetOpenAIAdvancedSchedulerSettingCacheForTest()
 			t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
-			svc := newOpenAICompactionSchedulerTestService([]Account{
+			accounts := []Account{
 				{ID: 73021, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
-				{ID: 73022, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 100, Extra: map[string]any{"openai_compact_supported": true}},
-			}, engine == "advanced")
+				{ID: 73022, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 100, Credentials: map[string]any{"api_key": "fixture-value"}},
+			}
+			recordOpenAICompactionTargetEvidence(t, &OpenAIGatewayService{}, &accounts[1], "gpt-5.6-sol", openAICompactionKindV2, OpenAICompactionProbeVerdictSupported)
+			svc := newOpenAICompactionSchedulerTestService(accounts, engine == "advanced")
 			svc.cfg.Gateway.Scheduling.LoadBatchEnabled = engine == "load_batch"
 			groupID := int64(93021)
 			selection, _, err := svc.SelectAccountWithSchedulerForCapability(context.Background(), &groupID, "", "", "gpt-5.6-sol", nil,
