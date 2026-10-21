@@ -1003,12 +1003,25 @@ func buildCodexModelsManifest(
 		if err != nil {
 			return nil, err
 		}
-		if capabilities := modelMetadata[modelID].CodexToolCapabilities; len(capabilities) > 0 {
+		capabilities := modelMetadata[modelID].CodexToolCapabilities
+		if len(capabilities) > 0 || isOpenAIGPT6AstraModel(metadataModelID) {
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(encoded, &fields); err != nil {
 				return nil, err
 			}
 			applyCodexToolCapabilities(fields, capabilities, true)
+			// Astra's model identity guarantees Fast even when an older account
+			// snapshot omitted or projected an empty service-tier declaration.
+			if isOpenAIGPT6AstraModel(metadataModelID) {
+				serviceTiers, err := mergeConfiguredCodexServiceTiers(
+					fields["service_tiers"],
+					configuredCodexServiceTiersForModel(metadataModelID),
+				)
+				if err != nil {
+					return nil, err
+				}
+				fields["service_tiers"] = serviceTiers
+			}
 			encoded, err = json.Marshal(fields)
 			if err != nil {
 				return nil, err
@@ -1019,6 +1032,27 @@ func buildCodexModelsManifest(
 	return json.Marshal(struct {
 		Models []json.RawMessage `json:"models"`
 	}{Models: models})
+}
+
+func mergeConfiguredCodexServiceTiers(existing json.RawMessage, required []configuredCodexServiceTier) (json.RawMessage, error) {
+	tiers := make([]configuredCodexServiceTier, 0, len(required)+2)
+	if len(bytes.TrimSpace(existing)) > 0 && !bytes.Equal(bytes.TrimSpace(existing), []byte("null")) {
+		if err := json.Unmarshal(existing, &tiers); err != nil {
+			return nil, err
+		}
+	}
+	seen := make(map[string]struct{}, len(tiers))
+	for _, tier := range tiers {
+		seen[tier.ID] = struct{}{}
+	}
+	for _, tier := range required {
+		if _, ok := seen[tier.ID]; ok {
+			continue
+		}
+		tiers = append(tiers, tier)
+		seen[tier.ID] = struct{}{}
+	}
+	return json.Marshal(tiers)
 }
 
 func codexCatalogMetadataModels(
