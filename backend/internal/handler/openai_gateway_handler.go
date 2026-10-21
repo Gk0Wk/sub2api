@@ -1030,12 +1030,81 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		submitResponsesUsage(result)
-		reqLog.Debug("openai.request_completed",
+		completionFields := openAIRequestEgressFields(account)
+		completionFields = append(completionFields,
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", switchCount),
 		)
+		if result != nil {
+			if requestID := strings.TrimSpace(result.RequestID); requestID != "" {
+				completionFields = append(completionFields, zap.String("upstream_request_id", requestID))
+			}
+			if responseID := strings.TrimSpace(result.ResponseID); responseID != "" {
+				completionFields = append(completionFields, zap.String("upstream_response_id", responseID))
+			}
+		}
+		reqLog.Info("openai.request_completed", completionFields...)
 		return
 	}
+}
+
+type openAIRequestEgressAttribution struct {
+	Class     string
+	ProxyID   *int64
+	ProxyName string
+}
+
+// openAIRequestEgressFields emits only bounded route labels. Proxy host, URL,
+// credentials and account names remain outside request correlation logs.
+func openAIRequestEgressFields(account *service.Account) []zap.Field {
+	attribution := openAIRequestEgressAttribution{Class: "unknown", ProxyName: "unknown"}
+	if account == nil {
+		return []zap.Field{
+			zap.String("egress_class", attribution.Class),
+			zap.String("proxy_name", attribution.ProxyName),
+		}
+	}
+
+	tokens := strings.Fields(strings.TrimSpace(account.Name))
+	if len(tokens) > 0 {
+		switch tokens[len(tokens)-1] {
+		case "[direct]":
+			attribution.Class = "direct"
+		case "[proxy]":
+			attribution.Class = "proxy"
+		case "[residential]":
+			attribution.Class = "residential"
+		}
+	}
+
+	if account.ProxyID == nil {
+		if attribution.Class == "direct" {
+			attribution.ProxyName = "direct/no_proxy"
+		} else if attribution.Class == "unknown" {
+			attribution.Class = "legacy_direct"
+			attribution.ProxyName = "direct/no_proxy"
+		}
+	} else {
+		if attribution.Class == "unknown" {
+			attribution.Class = "legacy_proxy"
+		}
+		if account.Proxy != nil && account.Proxy.ID > 0 {
+			proxyID := account.Proxy.ID
+			attribution.ProxyID = &proxyID
+			if name := strings.TrimSpace(account.Proxy.Name); name != "" {
+				attribution.ProxyName = name
+			}
+		}
+	}
+
+	fields := []zap.Field{
+		zap.String("egress_class", attribution.Class),
+		zap.String("proxy_name", attribution.ProxyName),
+	}
+	if attribution.ProxyID != nil {
+		fields = append(fields, zap.Int64("proxy_id", *attribution.ProxyID))
+	}
+	return fields
 }
 
 func isOpenAILegacyCompactPath(c *gin.Context) bool {
