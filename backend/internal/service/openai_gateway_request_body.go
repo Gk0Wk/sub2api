@@ -63,6 +63,43 @@ func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
 	return buildOpenAIResponsesURL(base)
 }
 
+// openAIResponsesTargetURL resolves the final ordinary Responses endpoint for
+// this account. Forward, passthrough, and capability probes share this function
+// so endpoint selection cannot drift between them.
+func (s *OpenAIGatewayService) openAIResponsesTargetURL(account *Account) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("account is unavailable")
+	}
+	var targetURL string
+	switch account.Type {
+	case AccountTypeOAuth:
+		targetURL = chatgptCodexURL
+	case AccountTypeSetupToken:
+		if account.IsOpenAIOAuthLike() {
+			targetURL = chatgptCodexURL
+		} else {
+			targetURL = openaiPlatformAPIURL
+		}
+	case AccountTypeAPIKey:
+		baseURL := account.GetOpenAIBaseURL()
+		if account.UsesNativeCNResponses() && account.IsAdaptiveAPIProtocol() {
+			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
+		if baseURL == "" {
+			targetURL = openaiPlatformAPIURL
+		} else {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return "", err
+			}
+			targetURL = buildOpenAIResponsesURLForPlatform(account.Platform, validatedURL)
+		}
+	default:
+		targetURL = openaiPlatformAPIURL
+	}
+	return targetURL, nil
+}
+
 func shouldPreserveOpenAIResponsesNoneReasoningEffort(account *Account) bool {
 	if account == nil {
 		return false
@@ -433,6 +470,8 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
+		// Native compaction is opaque conversation state, not replayable
+		// reasoning. Never delete it as part of reasoning self-healing.
 		return item, false, true
 	case "reasoning":
 	default:
