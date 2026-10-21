@@ -506,6 +506,52 @@ func TestOpenAIGatewayService_OAuthPassthrough_GroupForceOpenAIFastInjectsMissin
 	require.Equal(t, OpenAIFastTierPriority, *result.ServiceTier)
 }
 
+func TestOpenAIGatewayService_OAuthPassthrough_CompositeFastCapabilityNegotiation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-6-astra","stream":true,"instructions":"test","input":"hi","service_tier":"priority"}`)
+	newService := func() (*OpenAIGatewayService, *httpUpstreamRecorder) {
+		upstream := &httpUpstreamRecorder{resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		}}
+		return &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}, upstream
+	}
+	newContext := func(forceFast bool) *gin.Context {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.163.0")
+		ctx := context.WithValue(c.Request.Context(), ctxkey.Group, &Group{
+			ID: 7, Platform: PlatformComposite, Status: StatusActive, Hydrated: true,
+			ForceOpenAIFast: forceFast, AllowOpenAIFastDowngrade: true,
+		})
+		c.Request = c.Request.WithContext(ctx)
+		return c
+	}
+	account := &Account{
+		ID: 123, Name: "oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:       map[string]any{"openai_passthrough": true}, Status: StatusActive, Schedulable: true,
+		RateMultiplier: f64p(1),
+	}
+
+	svc, upstream := newService()
+	c := newContext(false)
+	_, err := svc.Forward(c.Request.Context(), c, account, body)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "service_tier").Exists())
+
+	svc, upstream = newService()
+	c = newContext(true)
+	_, err = svc.Forward(c.Request.Context(), c, account, body)
+	var blocked *OpenAIFastBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Contains(t, blocked.Message, "does not support Fast")
+	require.Empty(t, upstream.requests)
+}
+
 // 「自动透传（仅替换认证）」的默认行为必须真的只替换认证：namespace 声明、
 // namespace 形态的 tool_choice、历史调用项上的 namespace 都原样转发，只清掉
 // 非调用项上的残留 namespace（Codex 协议里只有调用项会带该字段）。
