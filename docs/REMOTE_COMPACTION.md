@@ -1,61 +1,61 @@
-# 远程压缩：原生能力与服务端摘要
+# Remote Compaction: Native Capability And Server Summary
 
-普通 Responses 支持不能证明上游支持压缩。Sub2API 根据实际账号、映射后模型、协议、端点和探测证据选择原生压缩；管理员显式开启摘要兼容后，不具备原生能力的目标可以沿既有转发链路生成摘要。两者保持不同的能力标识。
+Support for ordinary Responses requests does not establish upstream compaction support. Sub2API selects native compaction from the actual account, mapped model, protocol, endpoint, and probe evidence. After an administrator explicitly enables summary compatibility, a target without native capability can use the existing forwarding path to generate a summary. The two capabilities remain independently identified.
 
-本功能仍在候选验收中，本文不表示已经部署或所有上游已经实测。
+This feature is still a review candidate. This document does not imply that it has been deployed or verified against every upstream.
 
-## 配置与选择
+## Configuration And Selection
 
-| 入口或字段 | 作用 |
+| Input or field | Purpose |
 | --- | --- |
-| 分组、组合路由、账号池、普通模型映射 | 确定授权范围与实际生成目标；压缩不授予额外权限 |
-| 协议设置、分协议地址、模型目录 | 决定实际上游协议和地址；固定 Chat/Messages 不能强制执行原生 Responses 压缩 |
-| `openai_compact_mode` | Auto 使用目标证据和默认声明，Force On 允许原生尝试，Force Off 排除原生执行；策略不证明上游能力 |
-| `compact_summary_enabled` | 默认关闭，显式允许服务端摘要；与原生策略独立 |
-| `openai_compact_probe_targets` | 服务端维护的最多 32 条目标证据，区分 v2/legacy、模型、协议、端点及配置指纹；客户端不能自行写入可信结果 |
-| 旧账号级 Compact probe 字段 | 保留历史兼容语义，不能证明所有模型、地址或两类协议都支持 |
-| `compact_model_mapping` | 保留原 OpenAI 范围，用于 legacy 首次选择及部分既有 v2 错误重试；摘要采用普通生成模型 |
+| Group, composite route, account pool, and regular model mapping | Determine the authorization scope and concrete generation target; compaction grants no additional access |
+| Protocol settings, per-protocol endpoints, and model catalog | Determine the actual upstream protocol and endpoint; a fixed Chat or Messages account cannot be forced to perform native Responses compaction |
+| `openai_compact_mode` | Auto uses target evidence and default declarations, Force On permits native attempts, and Force Off excludes native execution; the policy does not prove upstream capability |
+| `compact_summary_enabled` | Disabled by default and explicitly permits server-side summaries; independent from the native policy |
+| `openai_compact_probe_targets` | Up to 32 target evidence records maintained by the server, separating v2 and legacy capabilities by model, protocol, endpoint, and configuration fingerprint; clients cannot write trusted results |
+| Legacy account-level compact probe fields | Retained for historical compatibility semantics; they cannot prove support across every model, endpoint, or both protocol classes |
+| `compact_model_mapping` | Retains its original OpenAI scope for initial legacy selection and some existing v2 error retries; summaries use the regular generation model |
 
-创建、编辑与批量编辑复用共享设置，DeepSeek 等 provider 也能分别配置原生策略和摘要兼容。批量编辑只应用分别勾选的字段。原生 Force Off 不会关闭已显式允许的摘要。OpenAI 专属 compact 模型映射保持原有范围。
+Create, edit, and bulk edit reuse the shared settings. Providers such as DeepSeek can configure the native policy and summary compatibility independently. Bulk edit applies only fields selected individually. Native Force Off does not disable an explicitly enabled summary. OpenAI-specific compact model mapping keeps its existing scope.
 
-原生 v2 是普通 Responses 路径中的 `stream: true` 与 `compaction_trigger`；legacy 使用 `/responses/compact`。两类证据不互相提升资格。选中账号后的真实协议解析仍约束执行，历史探测不能覆盖当前固定协议或模型目录。
+Native v2 consists of `stream: true` plus `compaction_trigger` on the regular Responses path; legacy compaction uses `/responses/compact`. Evidence from one class never promotes eligibility for the other. Once an account is selected, the resolved protocol still constrains execution, and historical probe evidence cannot override the current fixed protocol or model catalog.
 
-调度复用默认、高级、load-batch、粘性及 failover 机制。筛选候选不逐个请求远程目录。已验证原生支持优先于 unknown；unknown 保留受控尝试资格，不显示为已支持。容量、限流和能力错误不能混为一谈。
+Scheduling reuses the existing default, advanced, load-batch, sticky, and failover mechanisms. Candidate filtering does not issue remote catalog requests per account. Verified native support takes precedence over unknown; unknown retains controlled attempt eligibility without being shown as supported. Capacity, rate limiting, and capability errors remain distinct.
 
-## 探测与界面
+## Probing And UI
 
-在现有“测试连接”中选择具体模型和“原生压缩 v2 探测”。固定 Chat Completions / Anthropic Messages 显示不兼容原因并禁用该项，普通测试仍可用。聚合账号按具体模型判断。
+In the existing connection test, select a concrete model and Native Compaction v2 Probe. Fixed Chat Completions and Anthropic Messages accounts show the incompatibility reason and disable that probe without disabling ordinary tests. Aggregated accounts are evaluated by concrete model.
 
-探测复用实际目标解析、账号认证、代理和请求头。必须收到可消费的压缩项和正常终态才算成功；HTTP 200、普通文字、空载荷、多项或截断不能充当支持证据。401、429、超时和 5xx 不永久解释为“不支持”。
+Probing reuses actual target resolution, account authentication, proxy, and request headers. Support is recorded only after receiving a consumable compaction item and a normal terminal event; HTTP 200, ordinary text, an empty payload, multiple items, or truncation are not valid evidence. A 401, 429, timeout, or 5xx response is not permanently interpreted as unsupported.
 
-历史展示实际模型、协议、脱敏端点、结果、时间和错误类别。凭据来源、端点、协议、映射等配置变化使证据失效。当前目标记录没有独立时间过期机制，上游在原地址改变能力后须重新探测，历史结果不是永久承诺。设置更新仍走既有快照/outbox，不提供所有正在执行请求的读后写一致性。
+History shows the actual model, protocol, redacted endpoint, result, time, and error category. Credential source, endpoint, protocol, mapping, or other configuration changes invalidate evidence. Target records currently have no independent expiry mechanism; an upstream that changes capability at an existing endpoint must be probed again, and historical results are not a permanent guarantee. Settings updates continue to use the existing snapshot/outbox flow and do not provide read-after-write consistency for every in-flight request.
 
-provider 默认声明仅适用于对应默认端点。DeepSeek 默认声明与自定义中转探测分别显示，不能根据模型名字推断。上游能力更新时，profile 维护者应复核声明。
+Provider default declarations apply only to their corresponding default endpoints. DeepSeek default declarations and custom-relay probes are shown separately, and capability must not be inferred from the model name. Profile maintainers should review declarations when an upstream changes capability.
 
-## 摘要与后续还原
+## Summary And Subsequent Restoration
 
-1. 入口验证并还原 Sub2API 自有载荷，再进入现有协议转换。原生密文保持原格式与归属限制，不能删掉唯一压缩历史来重试。
-2. 摘要使用同一授权池内选中的账号及普通模型映射执行一次无工具推理，沿用认证、并发、配额、转换及 usage 归集，不递归调用本网关。
-3. 只在正常完成、非空且未截断时封装一个自有 `compaction.encrypted_content`；v2 返回相应 SSE item 和完整终态，legacy 返回对应 JSON。
-4. 后续回传该项时还原为普通上下文，不升级成 system/developer 指令。再次压缩包含前次摘要及后续历史。
+1. The ingress validates and restores Sub2API-owned payloads before entering the existing protocol conversion path. Native ciphertext retains its original format and ownership constraints and is not removed to make a retry succeed.
+2. Summary generation performs one tool-free inference with an account selected from the same authorization pool and the regular model mapping. It reuses authentication, concurrency, quota, conversion, and usage attribution without recursively calling this gateway.
+3. Only a successful, non-empty, non-truncated completion is wrapped as one Sub2API-owned `compaction.encrypted_content`; v2 returns the corresponding SSE item and complete terminal state, and legacy returns the corresponding JSON.
+4. When that item is returned later, it is restored as ordinary context and is not elevated into system or developer instructions. A later compaction includes the prior summary and subsequent history.
 
-格式使用 `s2cmp1.v1.` 前缀及标准库 AES-GCM。独立 32 字节随机密钥保存在既有 `security_secrets` 的 `compaction_summary_key_v1`，不复用 JWT/TOTP 密钥，也不依赖 Redis TTL 或单实例内存。载荷绑定用户和授权分组；同范围换 API key 不改变归属。跨用户、跨组、篡改、未知版本及缺失密钥均拒绝读取。
+The format uses the `s2cmp1.v1.` prefix and standard-library AES-GCM. A separate random 32-byte key is stored as `compaction_summary_key_v1` in the existing `security_secrets` store. It does not reuse JWT or TOTP keys and does not depend on Redis TTL or process-local memory. A payload is bound to the user and authorized group; changing an API key within the same scope does not change ownership. Cross-user, cross-group, tampered, unknown-version, and missing-key payloads are rejected.
 
-当前不支持在线轮换：实例首次加载后缓存该密钥，不能通过覆盖数据库记录并滚动重启换钥，否则新旧实例与历史载荷会失去兼容。恢复必须保留同一原钥。
+Online key rotation is not supported. The process caches the key after its first load, so replacing the database row and rolling the deployment would make old and new instances or historical payloads incompatible. Recovery must retain the original key.
 
-摘要有信息损失，并增加一次普通推理的延迟和用量。它不改变 OpenAI 原生密文或鉴权格式，也不把自有密文交给上游解密。密钥、摘要和完整载荷不得进入诊断日志。
+Summaries lose information and add one regular inference of latency and usage. They do not alter native OpenAI ciphertext or authentication formats, and Sub2API-owned ciphertext is never sent to an upstream for decryption. Keys, summaries, and complete payloads must not enter diagnostic logs.
 
-## 输入与恢复限制
+## Input And Recovery Limits
 
-- 当前只做单次文本摘要。最终模型必须具有已知上下文窗口；预算包含输入估算、8192 输出 token 及 1024 token 安全余量。缺少元数据或预算不足时明确失败，不静默截断或拆成多次计费请求。
-- 图片、文件、音频和视频输入当前均拒绝摘要，即使目标模型支持这些内容。未恢复的 `previous_response_id` 隐藏历史或不可读取的第三方原生密文也不能凭空总结；失败保留原历史。
-- 摘要最多 256 KiB，编码前信封最多 2 MiB，超限明确失败。
-- 数据库备份恢复必须覆盖摘要密钥，旧会话仍需读取时不能删除密钥；载荷不能脱离该网关直接交给其他上游使用。
+- Only one text summary is performed. The final model must have a known context window; the budget includes the input estimate, 8192 output tokens, and a 1024-token safety margin. Missing metadata or an insufficient budget fails explicitly instead of silently truncating input or splitting it into multiple billed requests.
+- Image, file, audio, and video inputs are currently rejected for summaries even when the target model supports them. Unrestored hidden history referenced only by `previous_response_id`, or unreadable third-party native ciphertext, cannot be summarized without source material; failure preserves the original history.
+- A summary is limited to 256 KiB and the encoded envelope to 2 MiB; larger results fail explicitly.
+- Database backup and restore must cover the summary key. It cannot be deleted while old sessions still require it, and a payload cannot be moved to another upstream without this gateway.
 
-## 发布与撤回
+## Rollout And Withdrawal
 
-先发布读取能力，保持账号摘要签发关闭，再在指定账号启用。发布前实际盘点 `compact_summary_enabled`，不能只凭代码默认值判断线上没有开启值。
+First deploy read support while summary issuance remains disabled for accounts, then enable it for selected accounts. Before deployment, inventory the actual `compact_summary_enabled` values; code defaults alone do not prove that no account already has it enabled.
 
-启用后撤回应关闭新签发并保留读取能力。不认识自有载荷的旧版本不能作为启用后的安全回滚目标；回滚版本须通过旧载荷读取、普通续接及重启恢复验收。
+Withdrawal after enablement should disable new issuance while retaining read support. An older version that cannot read Sub2API-owned payloads is not a safe rollback target; the rollback version must pass old-payload readback, ordinary continuation, and restart recovery.
 
-隔离测试覆盖三协议、首次和重复压缩、归属与篡改拒绝、账号切换、密钥持久化、多实例、关闭签发继续读取和用量归集。假上游不证明真实模型摘要质量或所有客户端兼容。最终仍需无本地压缩覆盖的隔离真实客户端验收，成功前保留故障会话现有恢复配置。
+Isolated tests cover the three protocols, first and repeated compaction, ownership and tamper rejection, account switching, key persistence, multiple instances, continuation after issuance is disabled, and usage attribution. A fake upstream does not prove summary quality with real models or compatibility with every client. Final acceptance still requires an isolated real-client test without a local compaction override; retain the existing recovery configuration for affected sessions until that passes.
