@@ -538,19 +538,23 @@ func TestBuildCodexModelsManifestAdvertisesUltrafastServiceTierForSol(t *testing
 	models := decodeCodexManifestModels(t, body)
 	require.Len(t, models, 2)
 
-	wantTiers := []any{
-		map[string]any{
-			"id":          "priority",
-			"name":        "Fast",
-			"description": "Priority processing for lower latency.",
-		},
-		map[string]any{
-			"id":          "ultrafast",
-			"name":        "Ultrafast",
-			"description": "Ultra-low latency processing.",
-		},
-	}
 	for _, model := range models {
+		priorityDescription := "Priority processing for lower latency."
+		if model["slug"] == "gpt-5.6-sol" {
+			priorityDescription = "1.5x speed, increased usage"
+		}
+		wantTiers := []any{
+			map[string]any{
+				"id":          "priority",
+				"name":        "Fast",
+				"description": priorityDescription,
+			},
+			map[string]any{
+				"id":          "ultrafast",
+				"name":        "Ultrafast",
+				"description": "Ultra-low latency processing.",
+			},
+		}
 		require.Equal(t, wantTiers, model["service_tiers"])
 		require.Nil(t, model["default_service_tier"])
 	}
