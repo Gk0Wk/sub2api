@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,24 @@ func (f *fakeDiagnoser) DiagnoseModelAvailabilityForPlatform(
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+func TestClassifyNoAccountError_ExplainsUpstreamBalanceCooldown(t *testing.T) {
+	const groupID int64 = 7803
+	until := time.Now().Add(time.Hour)
+	repo := &transientCatalogAccountRepo{groupID: groupID, accounts: []service.Account{{
+		ID: 14, Platform: service.PlatformDeepseek, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials:            map[string]any{"model_mapping": map[string]any{"deepseek-flash": "deepseek-flash"}},
+		TempUnschedulableUntil: &until, TempUnschedulableReason: "cn_balance_low: insufficient balance",
+	}}}
+	h := newGatewayModelsHandlerForTest(repo)
+	cls := classifyNoAccountError(context.Background(), h.gatewayService, &service.APIKey{GroupID: ptrInt64(groupID)}, "deepseek-flash", "deepseek-flash", service.PlatformDeepseek)
+	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
+	require.Equal(t, "api_error", cls.ErrType)
+	require.False(t, cls.ModelNotFound)
+	require.Equal(t, "All accounts configured for this model are temporarily unavailable due to insufficient upstream balance. Please contact the service administrator.", cls.Message)
+	require.Equal(t, cls, classifySelectionFailureError(fmt.Errorf("no available accounts (rate_limited=1)"), cls))
+}
 
 // newTestGinContextWithRequest wraps the bare newTestGinContext helper
 // (defined in openai_gateway_cyber_test.go) by additionally attaching a stub

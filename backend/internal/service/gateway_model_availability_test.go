@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -248,4 +249,62 @@ func TestDiagnoseModelAvailabilityForPlatform_WrongPlatformFiltersOut(t *testing
 
 	require.False(t, diag.HasAccountsInPool, "OpenAI route must not see Anthropic accounts in pool")
 	require.False(t, diag.HasModelSupport)
+}
+
+func TestModelAvailabilityBalanceCooldownDiagnosis(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	expired := time.Now().Add(-time.Hour)
+	blocked := Account{
+		ID: 14, Platform: PlatformDeepseek, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true,
+		Credentials:            map[string]any{"model_mapping": map[string]any{"deepseek-flash": "deepseek-flash"}},
+		TempUnschedulableUntil: &until, TempUnschedulableReason: cnBalanceLowReason("insufficient balance"),
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Account)
+		want   bool
+	}{
+		{"all supporting accounts blocked", func(*Account) {}, true},
+		{"recovered supporting account", func(a *Account) { a.TempUnschedulableUntil = nil }, false},
+		{"expired block", func(a *Account) { a.TempUnschedulableUntil = &expired }, false},
+		{"different cooldown owner", func(a *Account) { a.TempUnschedulableReason = "upstream unavailable" }, false},
+		{"prefix collision", func(a *Account) { a.TempUnschedulableReason = "cn_balance_lower" }, false},
+		{"manually disabled account", func(a *Account) { a.Schedulable = false; a.TempUnschedulableUntil = nil }, true},
+		{"other model", func(a *Account) {
+			a.TempUnschedulableUntil = nil
+			a.Credentials = map[string]any{"model_mapping": map[string]any{"other-model": "other-model"}}
+		}, true},
+		{"other platform", func(a *Account) { a.Platform = PlatformOpenAI; a.TempUnschedulableUntil = nil }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other := blocked
+			other.ID = 15
+			tc.mutate(&other)
+			for _, accounts := range [][]Account{{blocked, other}, {other, blocked}} {
+				repo := &mockAccountRepoForPlatform{accounts: accounts}
+				for _, svc := range []ModelAvailabilityDiagnoser{
+					&GatewayService{accountRepo: repo, cfg: testConfig()},
+					&OpenAIGatewayService{accountRepo: repo, cfg: testConfig()},
+				} {
+					diag := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "deepseek-flash", PlatformDeepseek)
+					require.True(t, diag.HasModelSupport)
+					require.Equal(t, tc.want, diag.AllModelAccountsBalanceBlocked)
+					unsupported := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "missing-model", PlatformDeepseek)
+					require.False(t, unsupported.AllModelAccountsBalanceBlocked)
+				}
+			}
+		})
+	}
+}
+
+func TestModelAvailabilityLookupFailureDoesNotClaimBalanceExhaustion(t *testing.T) {
+	repo := &countingCodexModelsAccountRepo{availabilityErr: errors.New("database unavailable")}
+	for _, svc := range []ModelAvailabilityDiagnoser{
+		&GatewayService{accountRepo: repo, cfg: testConfig()},
+		&OpenAIGatewayService{accountRepo: repo, cfg: testConfig()},
+	} {
+		diag := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "deepseek-flash", PlatformDeepseek)
+		require.True(t, diag.HasModelSupport)
+		require.False(t, diag.AllModelAccountsBalanceBlocked)
+	}
 }

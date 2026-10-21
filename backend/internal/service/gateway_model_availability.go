@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -24,6 +25,9 @@ type ModelAvailabilityDiagnosis struct {
 	// HasRetiredSubscriptionModel records a ChatGPT upstream blocked by model
 	// retirement, so an unsupported request can include migration guidance.
 	HasRetiredSubscriptionModel bool
+	// AllModelAccountsBalanceBlocked is true only when every model-capable
+	// account has a current balance-owned temporary scheduling block.
+	AllModelAccountsBalanceBlocked bool
 }
 
 // ModelAvailabilityDiagnoser is implemented by gateway services that can
@@ -100,6 +104,7 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 	}
 
 	diag := ModelAvailabilityDiagnosis{}
+	modelAccounts, balanceBlockedAccounts := 0, 0
 	for i := range accounts {
 		if useMixed && accounts[i].Platform == PlatformAntigravity && !accounts[i].IsMixedSchedulingEnabled() {
 			continue
@@ -107,8 +112,18 @@ func (s *GatewayService) DiagnoseModelAvailabilityForPlatform(
 		diag.HasAccountsInPool = true
 		if s.isModelSupportedByAccountWithContext(ctx, &accounts[i], requestedModel) {
 			diag.HasModelSupport = true
-			return diag
+			modelAccounts++
+			if accountHasActiveBalanceCooldown(&accounts[i]) {
+				balanceBlockedAccounts++
+			}
 		}
 	}
+	diag.AllModelAccountsBalanceBlocked = modelAccounts > 0 && balanceBlockedAccounts == modelAccounts
 	return diag
+}
+
+func accountHasActiveBalanceCooldown(account *Account) bool {
+	return account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(time.Now()) &&
+		(account.TempUnschedulableReason == cnBalanceLowReasonPrefix ||
+			strings.HasPrefix(account.TempUnschedulableReason, cnBalanceLowReasonPrefix+":"))
 }

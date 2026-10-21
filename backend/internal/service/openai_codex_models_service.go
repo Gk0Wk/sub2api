@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
@@ -227,14 +228,10 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 	return nil
 }
 
-// loadCodexGroupCatalogAccounts separates picker membership from capability
-// intersection. visible accounts are currently schedulable and decide which
-// public aliases appear. catalog accounts are persistently enabled group
-// members; the availability query ignores transient rate-limit, overload, and
-// temporary-unschedulable state so those conditions cannot widen advertised
-// capabilities. Persistently disabled accounts are excluded because routing
-// cannot select them. If the availability query fails, the catalog falls back
-// to the schedulable set so a listing error does not fail the client request.
+// loadCodexGroupCatalogAccounts uses persistently enabled group members for
+// picker membership and capability intersection. Temporary scheduling blocks
+// must neither remove model metadata nor widen advertised capabilities.
+// If the availability query fails, retain the existing schedulable fallback.
 func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, groupID int64) (visible []Account, catalog []Account, err error) {
 	if repo == nil {
 		return nil, nil, nil
@@ -247,24 +244,13 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 	groupAccounts, listErr := repo.ListModelAvailabilityCandidates(
 		ctx,
 		&groupID,
-		[]string{
-			PlatformAnthropic,
-			PlatformOpenAI,
-			PlatformGemini,
-			PlatformAntigravity,
-			PlatformGrok,
-			PlatformKimi,
-			PlatformZhipu,
-			PlatformDeepseek,
-			PlatformMiniMax,
-			PlatformOpenCodeGo,
-		},
+		domain.ConcretePlatformIDs(),
 		false,
 	)
 	if listErr != nil {
 		return visible, catalog, nil
 	}
-	return visible, groupAccounts, nil
+	return groupAccounts, groupAccounts, nil
 }
 
 func openAIConfiguredCodexModelIDs(accounts []Account) []string {
