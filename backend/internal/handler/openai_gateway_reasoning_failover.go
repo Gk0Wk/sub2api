@@ -7,19 +7,21 @@ import (
 )
 
 // openAIPassthroughFailoverState tracks account and passthrough transitions for
-// one Responses forwarding loop. Once the loop changes accounts, account-bound
-// encrypted input must be removed from every later attempt.
+// one Responses forwarding loop. Replayable reasoning may be stripped after a
+// provider transition; opaque native compaction must instead stop the attempt.
 type openAIPassthroughFailoverState struct {
-	passthroughSeen bool
-	lastAccountID   int64
-	accountSwitched bool
+	passthroughSeen                     bool
+	lastAccountID                       int64
+	accountSwitched                     bool
+	nativeCompactionCrossAccountBlocked bool
 }
 
 // deriveOpenAIForwardAttemptBody returns the request body for the upcoming forward
-// attempt against account. It always derives from the immutable canonical body and
-// removes encrypted input items after an account switch, or when the loop crosses
-// from a passthrough account to a non-passthrough account. This remains sticky
-// across retries and additional accounts. The canonical slice is never mutated.
+// attempt against account. It always derives from the immutable canonical body.
+// Replayable reasoning is removed when the loop crosses provider modes. Native
+// compaction is never deleted: a cross-account retry is blocked because the
+// gateway has no owner evidence for that ciphertext. The canonical slice is never
+// mutated.
 //
 // This method is invoked exactly once per forward attempt, immediately before the
 // Forward call, and advances the failover state as a side effect.
@@ -36,8 +38,15 @@ func (h *OpenAIGatewayHandler) deriveOpenAIForwardAttemptBody(
 		state.accountSwitched = true
 	}
 	state.lastAccountID = account.ID
+	if state.accountSwitched && service.HasOpenAIEncryptedCompactionInput(canonicalBody) {
+		// Native compaction is opaque state owned by the account that minted it.
+		// Dropping it would silently shorten the conversation, so stop instead of
+		// replaying an incomplete history on another account.
+		state.nativeCompactionCrossAccountBlocked = true
+		return canonicalBody
+	}
 	if state.accountSwitched && openAIRequestCarriesAccountBoundContinuation(canonicalBody) {
-		sanitized, changed, err := service.SanitizeOpenAIAccountBoundEncryptedContent(canonicalBody)
+		sanitized, changed, err := service.SanitizeOpenAICrossModeFailoverReasoning(canonicalBody)
 		if err != nil {
 			if reqLog != nil {
 				reqLog.Warn("openai.failover_account_bound_encrypted_content_sanitize_failed",

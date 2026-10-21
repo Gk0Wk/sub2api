@@ -842,6 +842,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsInvalidEncryptedContentRecoveryTried {
 				return false
 			}
+			if HasOpenAIEncryptedCompactionInput(body) {
+				logOpenAIWSModeInfo(
+					"reconnect_invalid_encrypted_content_recovery_skip account_id=%d attempt=%d reason=encrypted_native_compaction",
+					account.ID,
+					attempt,
+				)
+				return false
+			}
 			// 写入 lineage 后，同一失效密文在后续 turn 进场时被预剥离，不再重复
 			// 触发上游拒绝与重连。摘要取自进场形态的 body（密文项只可能来自
 			// 客户端进场请求，重复摘要幂等）。
