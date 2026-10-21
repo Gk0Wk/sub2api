@@ -349,6 +349,72 @@ func TestOpenAIGatewayService_Forward_HTTPIngressRetriesResponseFailedSSEInvalid
 	require.Equal(t, "keep SSE summary", gjson.GetBytes(secondBody, "input.0.summary.0.text").String(), "SSE 错误恢复应保留有效 reasoning summary")
 }
 
+func TestOpenAIGatewayService_Forward_NormalizesPlaintextAgentMessageForOpenAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	wsFallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer wsFallbackServer.Close()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "custom-client/1.0")
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	upstream := &httpUpstreamSequenceRecorder{
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"resp_agent_message_normalized","usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":0}}}`,
+				)),
+			},
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+	}
+
+	account := &Account{
+		ID:          105,
+		Name:        "openai-apikey-agent-message",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": wsFallbackServer.URL,
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-6-astra","stream":false,"input":[{"type":"agent_message","id":"amsg_fixture","author":"/root","recipient":"/root/child","content":[{"type":"input_text","text":"Message Type: NEW_TASK\n"},{"type":"encrypted_content","encrypted_content":"do the task"}]},{"type":"input_text","text":"continue"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, upstream.callCount)
+	require.Equal(t, "message", gjson.GetBytes(upstream.bodies[0], "input.0.type").String())
+	require.Equal(t, "user", gjson.GetBytes(upstream.bodies[0], "input.0.role").String())
+	require.Equal(t, "input_text", gjson.GetBytes(upstream.bodies[0], "input.0.content.0.type").String())
+	require.Equal(t, "Message Type: NEW_TASK\ndo the task", gjson.GetBytes(upstream.bodies[0], "input.0.content.0.text").String())
+	require.NotContains(t, string(upstream.bodies[0]), "encrypted_content")
+}
+
 func TestOpenAIGatewayService_Forward_HTTPIngressRetriesWrappedInvalidEncryptedContentOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	wsFallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
