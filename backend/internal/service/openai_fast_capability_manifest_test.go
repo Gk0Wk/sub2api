@@ -52,6 +52,28 @@ func TestFastManifestAndRuntimeUseAccountCapabilities(t *testing.T) {
 	}
 }
 
+func TestFastManifestPreservesUpstreamSpeedTierDeclaration(t *testing.T) {
+	account := Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Credentials: map[string]any{
+			"base_url":      "https://chatgpt.com/backend-api/codex",
+			"model_mapping": map[string]any{"gpt-6-astra": "gpt-6-astra"},
+		}}
+	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{Models: map[string]UpstreamModelMetadata{
+		"gpt-6-astra": {CodexToolCapabilities: map[string]json.RawMessage{
+			"service_tiers":          json.RawMessage("[{\"id\":\"priority\",\"name\":\"Fast\",\"description\":\"2x speed\"}]"),
+			"additional_speed_tiers": json.RawMessage("[\"fast\"]"),
+		}},
+	}})
+
+	body, err := buildCodexModelsManifestForAccounts(PlatformOpenAI, []string{"gpt-6-astra"}, []Account{account}, nil, nil, true)
+	require.NoError(t, err)
+	model := decodeCodexManifestModels(t, body)[0]
+	require.Equal(t, []any{
+		map[string]any{"id": "priority", "name": "Fast", "description": "2x speed"},
+	}, model["service_tiers"])
+	require.Equal(t, []any{"fast"}, model["additional_speed_tiers"])
+}
+
 func TestFastManifestKeepsConflictingAccountCapabilitiesDisabled(t *testing.T) {
 	accounts := []Account{
 		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://relay.example/v1"}},

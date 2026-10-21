@@ -10,6 +10,7 @@ import (
 
 var codexToolCapabilityFields = []string{
 	"service_tiers",
+	"additional_speed_tiers",
 	"supports_search_tool", "apply_patch_tool_type", "comp_hash", "tool_mode", "use_responses_lite",
 	"multi_agent_reasoning_effort", "multi_agent_version",
 }
@@ -21,13 +22,18 @@ func applyCodexToolCapabilities(dst, src map[string]json.RawMessage, overwrite b
 		if len(value) == 0 {
 			continue
 		}
-		if field == "service_tiers" && bytes.Equal(value, []byte("null")) {
+		if (field == "service_tiers" || field == "additional_speed_tiers") && bytes.Equal(value, []byte("null")) {
 			value = []byte("[]")
 		}
 		// These Codex fields are nullable booleans or strings, never arbitrary objects.
 		if !bytes.Equal(value, []byte("null")) {
 			if field == "service_tiers" {
 				var tiers []configuredCodexServiceTier
+				if json.Unmarshal(value, &tiers) != nil {
+					continue
+				}
+			} else if field == "additional_speed_tiers" {
+				var tiers []string
 				if json.Unmarshal(value, &tiers) != nil {
 					continue
 				}
@@ -293,7 +299,7 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 			switch field {
 			case "supports_search_tool", "use_responses_lite":
 				fallback = json.RawMessage("false")
-			case "service_tiers":
+			case "service_tiers", "additional_speed_tiers":
 				fallback = json.RawMessage("[]")
 			}
 			result.CodexToolCapabilities[field] = fallback
