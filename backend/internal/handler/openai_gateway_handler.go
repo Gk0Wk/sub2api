@@ -1076,9 +1076,10 @@ func openAIRequestEgressFields(account *service.Account) []zap.Field {
 	}
 
 	if account.ProxyID == nil {
-		if attribution.Class == "direct" {
+		switch attribution.Class {
+		case "direct":
 			attribution.ProxyName = "direct/no_proxy"
-		} else if attribution.Class == "unknown" {
+		case "unknown":
 			attribution.Class = "legacy_direct"
 			attribution.ProxyName = "direct/no_proxy"
 		}
