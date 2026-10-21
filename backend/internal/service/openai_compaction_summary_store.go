@@ -196,14 +196,3 @@ func (s *OpenAIGatewayService) RestoreOpenAICompactionSummaryInput(ctx context.C
 	}
 	return encoded, true, nil
 }
-
-func SetOpenAICompactionSummaryKeyForTest(s *OpenAIGatewayService, key []byte) {
-	if s == nil {
-		return
-	}
-	s.compactionSummaryKeyMu.Lock()
-	defer s.compactionSummaryKeyMu.Unlock()
-	if len(key) == openAICompactionSummaryKeyBytes {
-		s.compactionSummaryKey = append([]byte(nil), key...)
-	}
-}

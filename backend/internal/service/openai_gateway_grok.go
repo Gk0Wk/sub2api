@@ -143,7 +143,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 			break
 		}
 		if hasUnrecoverableCompaction {
-			return nil, fmt.Errorf("Grok rejected encrypted compaction state; refusing retry without the original history")
+			return nil, fmt.Errorf("grok rejected encrypted compaction state; refusing retry without the original history")
 		}
 
 		var retryBody []byte

@@ -13,7 +13,7 @@ This feature is still a review candidate. This document does not imply that it h
 | `openai_compact_mode` | Auto uses target evidence and default declarations, Force On permits native attempts, and Force Off excludes native execution; the policy does not prove upstream capability |
 | `compact_summary_enabled` | Disabled by default and explicitly permits server-side summaries; independent from the native policy |
 | `openai_compact_probe_targets` | Up to 32 target evidence records maintained by the server, separating v2 and legacy capabilities by model, protocol, endpoint, and configuration fingerprint; clients cannot write trusted results |
-| Legacy account-level compact probe fields | Retained for historical compatibility semantics; they cannot prove support across every model, endpoint, or both protocol classes |
+| Legacy account-level compact probe fields | Display-only history; they do not admit, reject, or rank a current target and do not disable summary fallback |
 | `compact_model_mapping` | Retains its original OpenAI scope for initial legacy selection and some existing v2 error retries; summaries use the regular generation model |
 
 Create, edit, and bulk edit reuse the shared settings. Providers such as DeepSeek can configure the native policy and summary compatibility independently. Bulk edit applies only fields selected individually. Native Force Off does not disable an explicitly enabled summary. OpenAI-specific compact model mapping keeps its existing scope.

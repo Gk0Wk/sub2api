@@ -126,7 +126,8 @@ func TestUpdateOpenAICompactionProbeTargetMergesTwoTargetsWithoutLoss(t *testing
 
 	var stored map[string]any
 	require.NoError(t, json.Unmarshal(mustJSON(t, secondUpdates), &stored))
-	records := stored[service.OpenAICompactionProbeTargetsExtraKey].(map[string]any)
+	records, ok := stored[service.OpenAICompactionProbeTargetsExtraKey].(map[string]any)
+	require.True(t, ok)
 	require.Len(t, records, 2)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -279,14 +279,7 @@ func (a *Account) remoteCompactionV2Capability() ProviderCapabilityStatus {
 		return ProviderCapabilityUnknown
 	}
 	if a.IsOpenAI() {
-		supported, known := a.OpenAICompactSupportKnown()
-		if !known {
-			return ProviderCapabilityUnknown
-		}
-		if supported {
-			return ProviderCapabilitySupported
-		}
-		return ProviderCapabilityUnsupported
+		return ProviderCapabilityUnknown
 	}
 
 	profile := a.providerProfile()
