@@ -872,11 +872,11 @@ func openAIAgentMessageReplayText(content any) (string, bool) {
 		switch strings.TrimSpace(firstNonEmptyString(part["type"])) {
 		case "input_text", "text", "output_text":
 			if value, ok := part["text"].(string); ok {
-				text.WriteString(value)
+				_, _ = text.WriteString(value)
 			}
 		case "encrypted_content":
 			if value, ok := part["encrypted_content"].(string); ok && openAIAgentMessageEncryptedPartIsPlaintext(value) {
-				text.WriteString(value)
+				_, _ = text.WriteString(value)
 				converted = true
 			}
 		}
