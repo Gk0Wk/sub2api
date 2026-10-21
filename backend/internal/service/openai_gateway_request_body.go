@@ -63,6 +63,43 @@ func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
 	return buildOpenAIResponsesURL(base)
 }
 
+// openAIResponsesTargetURL resolves the final ordinary Responses endpoint for
+// this account. Forward, passthrough, and capability probes share this function
+// so endpoint selection cannot drift between them.
+func (s *OpenAIGatewayService) openAIResponsesTargetURL(account *Account) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("account is unavailable")
+	}
+	var targetURL string
+	switch account.Type {
+	case AccountTypeOAuth:
+		targetURL = chatgptCodexURL
+	case AccountTypeSetupToken:
+		if account.IsOpenAIOAuthLike() {
+			targetURL = chatgptCodexURL
+		} else {
+			targetURL = openaiPlatformAPIURL
+		}
+	case AccountTypeAPIKey:
+		baseURL := account.GetOpenAIBaseURL()
+		if account.UsesNativeCNResponses() && account.IsAdaptiveAPIProtocol() {
+			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
+		if baseURL == "" {
+			targetURL = openaiPlatformAPIURL
+		} else {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return "", err
+			}
+			targetURL = buildOpenAIResponsesURLForPlatform(account.Platform, validatedURL)
+		}
+	default:
+		targetURL = openaiPlatformAPIURL
+	}
+	return targetURL, nil
+}
+
 func shouldPreserveOpenAIResponsesNoneReasoningEffort(account *Account) bool {
 	if account == nil {
 		return false
@@ -433,9 +470,8 @@ func sanitizeEncryptedReasoningInputItem(item any) (next any, changed bool, keep
 	itemType, _ := inputItem["type"].(string)
 	switch strings.TrimSpace(itemType) {
 	case "compaction", "compaction_summary":
-		if _, encrypted := inputItem["encrypted_content"]; encrypted {
-			return nil, true, false
-		}
+		// Native compaction is opaque conversation state, not replayable
+		// reasoning. Never delete it as part of reasoning self-healing.
 		return item, false, true
 	case "reasoning":
 	default:
@@ -498,12 +534,44 @@ func SanitizeOpenAICrossModeFailoverReasoning(body []byte) (sanitized []byte, ch
 	return out, true, nil
 }
 
+// SanitizeOpenAIAccountBoundEncryptedContent removes account-bound encrypted
+// reasoning and compaction items before a request crosses to a different
+// upstream account. The visible history and compaction trigger remain intact.
+func SanitizeOpenAIAccountBoundEncryptedContent(body []byte) (sanitized []byte, changed bool, err error) {
+	if len(body) == 0 {
+		return body, false, nil
+	}
+	if !gjson.GetBytes(body, "input").Exists() {
+		return body, false, nil
+	}
+	var decoded map[string]any
+	if err := decodeOpenAIJSONUseNumber(body, &decoded); err != nil {
+		return body, false, fmt.Errorf("decode account-bound encrypted content: %w", err)
+	}
+	if !dropOpenAIAccountBoundEncryptedInputItems(decoded) {
+		return body, false, nil
+	}
+	out, marshalErr := marshalOpenAIUpstreamJSON(decoded)
+	if marshalErr != nil {
+		return body, false, fmt.Errorf("serialize account-bound encrypted content: %w", marshalErr)
+	}
+	return out, true, nil
+}
+
 // dropOpenAIEncryptedReasoningInputItems removes reasoning input items that carry
 // provider-specific encrypted_content in full — including their coupled id and
 // summary — and reports whether anything changed. Contrast with
 // trimOpenAIEncryptedReasoningItems, which only strips fields while keeping the
 // reasoning item skeleton.
 func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
+	return dropOpenAIInputItemsMatching(reqBody, isOpenAIEncryptedReasoningInputItem)
+}
+
+func dropOpenAIAccountBoundEncryptedInputItems(reqBody map[string]any) bool {
+	return dropOpenAIInputItemsMatching(reqBody, isOpenAIAccountBoundEncryptedInputItem)
+}
+
+func dropOpenAIInputItemsMatching(reqBody map[string]any, match func(any) bool) bool {
 	if len(reqBody) == 0 {
 		return false
 	}
@@ -516,7 +584,7 @@ func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
 		filtered := input[:0]
 		changed := false
 		for _, item := range input {
-			if isOpenAIEncryptedReasoningInputItem(item) {
+			if match(item) {
 				changed = true
 				continue
 			}
@@ -535,7 +603,7 @@ func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
 		filtered := input[:0]
 		changed := false
 		for _, item := range input {
-			if isOpenAIEncryptedReasoningInputItem(item) {
+			if match(item) {
 				changed = true
 				continue
 			}
@@ -551,7 +619,7 @@ func dropOpenAIEncryptedReasoningInputItems(reqBody map[string]any) bool {
 		reqBody["input"] = filtered
 		return true
 	case map[string]any:
-		if isOpenAIEncryptedReasoningInputItem(input) {
+		if match(input) {
 			delete(reqBody, "input")
 			return true
 		}
@@ -571,6 +639,47 @@ func isOpenAIEncryptedReasoningInputItem(item any) bool {
 	}
 	_, has := inputItem["encrypted_content"]
 	return has
+}
+
+func isOpenAIAccountBoundEncryptedInputItem(item any) bool {
+	inputItem, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	itemType, _ := inputItem["type"].(string)
+	switch strings.TrimSpace(itemType) {
+	case "reasoning", "compaction", "compaction_summary":
+	default:
+		return false
+	}
+	_, has := inputItem["encrypted_content"]
+	return has
+}
+
+// HasOpenAIEncryptedCompactionInput reports whether a Responses input carries
+// provider-native compaction state that cannot be replayed under another
+// account without owner evidence.
+func HasOpenAIEncryptedCompactionInput(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	check := func(item gjson.Result) bool {
+		if !item.IsObject() || !isOpenAICompactionType(item.Get("type").String()) {
+			return false
+		}
+		encrypted := item.Get("encrypted_content")
+		return encrypted.Type == gjson.String && strings.TrimSpace(encrypted.String()) != ""
+	}
+	if input.IsArray() {
+		found := false
+		input.ForEach(func(_, item gjson.Result) bool {
+			if check(item) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	return input.IsObject() && check(input)
 }
 
 // IsOpenAIResponsesCompactPath reports whether the request targets the legacy
