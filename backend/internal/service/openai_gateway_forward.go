@@ -245,6 +245,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
 			originalModel = reqModel
 		}
+		normalizedAgentBody, agentChanged, agentErr := normalizeOpenAIResponsesAgentMessageReplay(body)
+		if agentErr != nil {
+			return nil, fmt.Errorf("normalize OpenAI Responses agent message replay: %w", agentErr)
+		}
+		if agentChanged {
+			body = normalizedAgentBody
+			originalBody = normalizedAgentBody
+			requestView = newOpenAIRequestView(normalizedAgentBody)
+			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+			originalModel = reqModel
+		}
 		sanitizedBody, changed, sanitizeErr := sanitizeOpenAIResponsesInputItemIDs(body)
 		if sanitizeErr != nil {
 			return nil, fmt.Errorf("sanitize OpenAI Responses input item IDs: %w", sanitizeErr)
