@@ -7,12 +7,12 @@
 - [x] Pin Go 1.27.3 and Node 24.22.1 by immutable multi-platform image index
       in the root, deployment, and backend build paths.
 - [x] Verify Dockerfile amd64/arm64 resolution and run the pinned Node image.
-- [ ] Re-run the full Go test suite in the project CI or a Linux test
-      environment. The three Windows `sh` failures pass in the pinned Linux
-      container; two service tests pass alone but remain unstable in the full
-      package run and need a CI retest or separate pre-existing fix.
-- [ ] Build and scan a new immutable codex-relay image, then follow the
-      deployment owner's rollout and rollback procedure.
+- [x] Pinned Go 1.27.3 Linux full unit suite and vet pass; internal/service
+      passes in the full suite. Runtime image built, pushed and promoted to
+      internal codex-relay; see the
+      [promotion record](docs/releases/unreleased/2026-10-22-outbound-runtime-promotion.md).
+- [ ] Run a separate full vulnerability scan. The optional SBOM scanner image
+      pull failed; the runtime version checks do not represent a full scan.
 - [ ] Rebase the remaining local Sub2API branches, then remove the superseded
       security worktree only after the accepted branch and evidence are merged.
 
