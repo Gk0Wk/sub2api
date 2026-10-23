@@ -56,8 +56,11 @@ configuration 错误保持原分类；CAS 结果不确定不能转成可重试�
 8513 pass / 3 skip测试事件、exit0、无OOM。本轮没有重复全部仓库的集成测试，
 也没有把service测试视为新的真实数据库或业务验收。精确源码镜像和扫描仍待完成。
 
-运行环境为 CTYunGPU1（SSH 别名 `CTYunGPT1`）的 `gpu/gpu-dev`，2 CPU / 6 GiB，
-Go `-p 1 -parallel 1`，重任务串行。统一材料目录为
+运行环境为 CTYunGPU1（SSH 别名 `CTYunGPT1`）的 `gpu/gpu-dev`，每容器
+2 CPU / 6 GiB，Go `-p 1 -parallel 1`。早期 `red-old` 与 `green` 容器运行窗口
+曾重叠约10.80秒，不能声称全程严格串行；两次均未OOM。后续执行脚本增加活跃
+任务容器检查，拒绝重叠启动，后续完整unit、schema复验及service integration
+的运行窗口不重叠。统一材料目录为
 `/data/tmp/ispark-security-202610/sub2api-deadline-b783`，实际位于大容量数据卷。
 首轮完整单元退出 1，Docker 日志轮转导致前半段缺失；复验改为直接写集中目录。
 只读挂载阻挡 schema 测试创建 `.entc` 的失败单独保留，不通过修改产品代码绕过。
