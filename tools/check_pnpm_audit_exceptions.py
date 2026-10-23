@@ -148,6 +148,18 @@ def main() -> int:
     with open(args.audit, "r", encoding="utf-8") as handle:
         audit = json.load(handle)
 
+    # pnpm 的非零退出码既可能表示漏洞，也可能表示审计服务失败；后者不能按零漏洞处理。
+    if (
+        not isinstance(audit, dict)
+        or "error" in audit
+        or not any(
+            isinstance(audit.get(field), dict)
+            for field in ("advisories", "vulnerabilities")
+        )
+    ):
+        sys.stderr.write("Invalid audit report: audit failed or vulnerability data is missing.\n")
+        return 1
+
     # 读取异常清单并建立索引，便于快速匹配包名 + advisory。
     exceptions = parse_exceptions(args.exceptions)
     exception_index = {}
