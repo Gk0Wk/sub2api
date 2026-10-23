@@ -23,8 +23,10 @@ on the patched 24.x line associated with CVE-2026-111497.
 
 ## Demo posture / limitations
 
-This is a source-only candidate from current `origin/main`. It does not push,
-publish, restart, or replace a running image. Full vulnerability scanning and
-the complete Go unit suite remain release gates; the existing candidate run
-passed Dockerfile checks, version probes, vet, and focused Linux tests while
-retaining two shared-state service test failures for owner review.
+This is a source candidate from `origin/main` at `b0a02a330`. It does not replace
+a running image. GitHub CI at `3ed874928` passed backend unit/integration tests,
+frontend checks, golangci-lint, shell checks, release-helper tests, and backend
+security checks. Frontend security failed on dependency advisories; the follow-up
+is recorded in [the frontend security note](2026-10-23-runtime-frontend-security.md).
+Earlier shared-state service test failures on the separate internal production
+fork remain that fork's owner finding, not a failed result for this PR head.
