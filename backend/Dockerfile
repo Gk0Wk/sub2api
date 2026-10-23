@@ -1,4 +1,5 @@
 FROM golang:1.27.3-alpine@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4
+ARG GO_BUILD_PARALLELISM=2
 
 WORKDIR /app
 
@@ -16,7 +17,7 @@ COPY . .
 
 # 构建应用
 RUN VERSION_VALUE="$(./scripts/resolve-version.sh)" && \
-    go build -ldflags="-s -w -X main.Version=${VERSION_VALUE}" -o main ./cmd/server/
+    go build -p "${GO_BUILD_PARALLELISM}" -ldflags="-s -w -X main.Version=${VERSION_VALUE}" -o main ./cmd/server/
 
 # 暴露端口
 EXPOSE 8080
