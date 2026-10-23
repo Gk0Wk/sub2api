@@ -105,6 +105,7 @@ func (r *poolHealthAccountRepo) snapshot() ([]OAuthRefreshPageOptions, []int64, 
 }
 
 type poolHealthRefresher struct {
+	onRefresh      func(context.Context)
 	err            error
 	delay          time.Duration
 	startDelays    []time.Duration
@@ -286,6 +287,9 @@ func (r *poolHealthRefresher) CanRefresh(account *Account) bool {
 func (r *poolHealthRefresher) NeedsRefresh(*Account, time.Duration) bool { return true }
 
 func (r *poolHealthRefresher) Refresh(ctx context.Context, _ *Account) (map[string]any, error) {
+	if r.onRefresh != nil {
+		r.onRefresh(ctx)
+	}
 	r.calls.Add(1)
 	active := r.active.Add(1)
 	defer r.active.Add(-1)
@@ -935,12 +939,22 @@ func TestTokenRefreshService_ParentCancellationStopsRetryWithoutAccountMutation(
 
 func TestTokenRefreshService_LateSuccessPastAttemptDeadlineIsRejected(t *testing.T) {
 	repo := &poolHealthAccountRepo{}
+	now := time.Now()
 	refresher := &poolHealthRefresher{
-		delay:         30 * time.Millisecond,
-		ignoreContext: true,
+		onRefresh: func(ctx context.Context) {
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok)
+			now = deadline.Add(time.Nanosecond)
+			require.NoError(t, ctx.Err())
+			select {
+			case <-ctx.Done():
+				t.Fatal("the cancellation callback must still be pending")
+			default:
+			}
+		},
 	}
 	svc := newPoolHealthService(repo, refresher, config.TokenRefreshConfig{MaxRetries: 1})
-	svc.attemptTimeoutOverride = 10 * time.Millisecond
+	svc.deadlineNow = func() time.Time { return now }
 	account := grokPoolAccount(43)
 
 	err := svc.refreshWithRetry(context.Background(), &account, refresher, nil, time.Hour)

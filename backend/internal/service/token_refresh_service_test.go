@@ -37,7 +37,7 @@ type tokenRefreshAccountRepo struct {
 	snapshotReads                bool
 	respectReadContext           bool
 	getByIDCalls                 int
-	durableReadDelay             time.Duration
+	durableReadHook              func()
 	mutateSchedulingOnSuccessCAS bool
 	reauthorizeOnErrorCAS        bool
 	reauthorizeOnTempCAS         bool
@@ -84,14 +84,8 @@ func (r *tokenRefreshAccountRepo) GetByID(ctx context.Context, id int64) (*Accou
 		return nil, ctx.Err()
 	}
 	r.getByIDCalls++
-	if r.getByIDCalls > 1 && r.durableReadDelay > 0 {
-		timer := time.NewTimer(r.durableReadDelay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+	if r.getByIDCalls > 1 && r.durableReadHook != nil {
+		r.durableReadHook()
 	}
 	account, err := r.mockAccountRepoForGemini.GetByID(ctx, id)
 	if err != nil || !r.snapshotReads {
@@ -376,6 +370,7 @@ type tokenRefresherStub struct {
 	credentials map[string]any
 	err         error
 	calls       int
+	onRefresh   func(context.Context)
 }
 
 func (r *tokenRefresherStub) CanRefresh(account *Account) bool {
@@ -388,6 +383,9 @@ func (r *tokenRefresherStub) NeedsRefresh(account *Account, refreshWindowDuratio
 
 func (r *tokenRefresherStub) Refresh(ctx context.Context, account *Account) (map[string]any, error) {
 	r.calls++
+	if r.onRefresh != nil {
+		r.onRefresh(ctx)
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -1162,34 +1160,48 @@ func TestPathA_GrokCancelAfterSuccessCASUsesDetachedDurableStateAndInvalidatesCa
 }
 
 func TestTokenRefreshService_PersistedSuccessCrossingAttemptDeadlineStaysSuccessful(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	var attemptDeadline time.Time
+	cooldown := now.Add(time.Hour)
 	account := &Account{
-		ID:          113,
-		Platform:    PlatformGrok,
-		Type:        AccountTypeOAuth,
-		Status:      StatusActive,
-		Schedulable: true,
+		ID:                     113,
+		Platform:               PlatformGrok,
+		Type:                   AccountTypeOAuth,
+		Status:                 StatusActive,
+		Schedulable:            true,
+		TempUnschedulableUntil: &cooldown,
 		Credentials: map[string]any{
 			"access_token":  "attempted-access",
 			"refresh_token": "attempted-refresh",
 		},
 	}
 	repo := &tokenRefreshAccountRepo{
-		snapshotReads:    true,
-		durableReadDelay: 30 * time.Millisecond,
+		snapshotReads: true,
+		durableReadHook: func() {
+			require.False(t, attemptDeadline.IsZero())
+			now = attemptDeadline.Add(time.Nanosecond)
+		},
 	}
 	repo.accountsByID = map[int64]*Account{account.ID: account}
 	scheduler := &tokenRefreshSchedulerCache{}
 	svc := &TokenRefreshService{
-		accountRepo:            repo,
-		refreshAPI:             NewOAuthRefreshAPI(repo, nil),
-		refreshPolicy:          DefaultBackgroundRefreshPolicy(),
-		cfg:                    &config.TokenRefreshConfig{MaxRetries: 1, ProviderFailureThreshold: 1},
-		schedulerCache:         scheduler,
-		attemptTimeoutOverride: 10 * time.Millisecond,
+		accountRepo:    repo,
+		refreshAPI:     NewOAuthRefreshAPI(repo, nil),
+		refreshPolicy:  DefaultBackgroundRefreshPolicy(),
+		cfg:            &config.TokenRefreshConfig{MaxRetries: 1, ProviderFailureThreshold: 1},
+		schedulerCache: scheduler,
+		deadlineNow:    clock,
 	}
+	svc.refreshAPI.deadlineNow = clock
 	refresher := &tokenRefresherStub{credentials: map[string]any{
 		"access_token":  "provider-access",
 		"refresh_token": "provider-refresh",
+	}, onRefresh: func(ctx context.Context) {
+		var ok bool
+		attemptDeadline, ok = ctx.Deadline()
+		require.True(t, ok)
+		require.NoError(t, ctx.Err())
 	}}
 	state := &tokenRefreshProviderState{
 		service:  svc,
@@ -1205,6 +1217,7 @@ func TestTokenRefreshService_PersistedSuccessCrossingAttemptDeadlineStaysSuccess
 	require.Equal(t, 1, repo.conditionalSuccessCalls)
 	require.Zero(t, repo.conditionalTempCalls)
 	require.Zero(t, repo.setTempUnschedCalls)
+	require.Zero(t, repo.clearTempCalls, "expired cleanup must not clear durable scheduling exclusions")
 	require.False(t, state.isTripped(), "a durable success must not count toward the provider breaker")
 	require.Equal(t, "provider-refresh", repo.accountsByID[account.ID].GetGrokRefreshToken())
 	require.Equal(t, 1, scheduler.setAccountCalls)

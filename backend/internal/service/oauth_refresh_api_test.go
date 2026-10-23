@@ -634,22 +634,40 @@ func TestRefreshIfNeeded_RequestPathDBRereadMissingGrokRefreshCredentialReturnsP
 }
 
 func TestRefreshIfNeeded_LateSuccessAfterDeadlineDoesNotPersist(t *testing.T) {
-	account := &Account{ID: 85, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive}
-	repo := &refreshAPIAccountRepo{account: account}
-	executor := &refreshAPIExecutorStub{
-		needsRefresh: true,
-		credentials:  map[string]any{"access_token": "late-token"},
-		delay:        30 * time.Millisecond,
+	for _, platform := range []string{PlatformGrok, PlatformGemini} {
+		t.Run(platform, func(t *testing.T) {
+			account := &Account{ID: 85, Platform: PlatformGrok, Type: AccountTypeOAuth, Status: StatusActive}
+			account.Platform = platform
+			repo := &refreshAPIAccountRepo{account: account}
+			now := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			defer cancel()
+			executor := &refreshAPIExecutorStub{
+				needsRefresh: true,
+				credentials:  map[string]any{"access_token": "late-token"},
+				onRefresh: func() {
+					deadline, ok := ctx.Deadline()
+					require.True(t, ok)
+					now = deadline.Add(time.Nanosecond)
+					require.NoError(t, ctx.Err())
+					select {
+					case <-ctx.Done():
+						t.Fatal("the cancellation callback must still be pending")
+					default:
+					}
+				},
+			}
+			api := NewOAuthRefreshAPI(repo, nil)
+			api.deadlineNow = func() time.Time { return now }
+
+			result, err := api.RefreshIfNeeded(ctx, account, executor, time.Hour)
+
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.Nil(t, result)
+			require.Zero(t, repo.updateCredentialsCalls, "late credentials must not cross the unified API persistence boundary")
+			require.Zero(t, repo.successCASCalls, "late credentials must not enter the Grok CAS")
+		})
 	}
-	api := NewOAuthRefreshAPI(repo, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-
-	result, err := api.RefreshIfNeeded(ctx, account, executor, time.Hour)
-
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Nil(t, result)
-	require.Zero(t, repo.updateCredentialsCalls, "late credentials must not cross the unified API persistence boundary")
 }
 
 func TestRefreshIfNeeded_NilCredentials(t *testing.T) {

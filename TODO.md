@@ -1,5 +1,32 @@
 # TODO
 
+## Active: OAuth refresh deadline boundary (2026-10-23)
+
+- [x] Confirm source ownership and isolate branch from `c9b820271`;
+      production remains HOLD, no push/deploy.
+- [x] Reproduce late credentials with an explicit deadline and an open Done
+      channel using a controlled clock; verify both persistence paths.
+- [x] Check cancellation and deadlines before first persistence, preserving
+      durable-success cleanup and provider error classification.
+- [x] Run focused RED/GREEN, old/new dependency controls, then unit/integration
+      checks under 2 CPU / 6 GiB in CTYunGPU1 `gpu/gpu-dev`; source, logs and
+      caches are centralized at `/data/tmp/ispark-security-202610/sub2api-deadline-b783`.
+      The first 3 GiB compilation was OOM-killed before any test ran.
+- [ ] Build and scan an exact-source candidate, obtain independent review,
+      hand evidence to the original production coordinator, and clean caches.
+
+Focused old/new dependency RED/GREEN and independent source review are complete.
+Captured full unit: 57 packages passed, 51 had no tests, schema failed on a
+readonly `.entc` fixture. Its byte-identical writable recheck passed, as did the
+complete service integration-tag suite. The first full unit output was rotated
+by Docker and remains incomplete evidence. Keep original failures and HOLD.
+
+The approved scope is private implementation and deterministic regressions;
+public contracts, schema and production are outside this unit. Stop the
+affected work on write conflicts, repeated verification failure, or a need to
+change persistence/rotation semantics. Detailed acceptance and results belong
+in the release entry; this branch does not supersede the production window.
+
 ## Active: Sub2API security runtime baseline
 
 - [x] Create an isolated worktree from the live lineage baseline
