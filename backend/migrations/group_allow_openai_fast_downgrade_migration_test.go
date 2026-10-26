@@ -8,7 +8,7 @@ import (
 )
 
 func TestGroupAllowOpenAIFastDowngradeMigration(t *testing.T) {
-	content, err := FS.ReadFile("246_group_allow_openai_fast_downgrade.sql")
+	content, err := FS.ReadFile("249_group_allow_openai_fast_downgrade.sql")
 	require.NoError(t, err)
 
 	sql := strings.Join(strings.Fields(string(content)), " ")
