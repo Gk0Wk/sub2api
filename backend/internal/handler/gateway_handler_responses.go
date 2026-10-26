@@ -125,6 +125,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			"This group is restricted to Claude Code clients (/v1/messages only)")
 		return
 	}
+	if geminiImageGenerationRejected(c, apiKey, nil, reqModel, channelMapping.MappedModel) {
+		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", service.ImageGenerationPermissionMessage())
+		return
+	}
 
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.responsesSecurityAuditError(c, decision)
@@ -359,6 +363,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
+		// Success, partial streaming usage, and summary failures share one recorder.
 		recordUsage := onceOpenAIForwardUsageRecorder(func(forwardResult *service.ForwardResult) {
 			if forwardResult == nil {
 				return
@@ -431,6 +436,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
 				zap.Error(err),
 			)
+			if result != nil {
+				recordUsage(result)
+			}
 			return
 		}
 
